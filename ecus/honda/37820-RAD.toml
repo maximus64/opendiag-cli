@@ -1,0 +1,4 @@
+title = "Engine (PCM, 37820-RAD)"
+diag = "obd"
+match = [{ obd = 4, pattern = "37805-RAD-*" }]
+

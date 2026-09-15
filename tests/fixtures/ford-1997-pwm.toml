@@ -1,0 +1,36 @@
+# Read-only J2534 05.00 capture, 2026-10-11, owner's 1997 F-150 ML2-355 PCM.
+# PWM 41600 bit/s, pins 2/10, tester F1, functional lookup 6B; CRC removed by adapter.
+# Firmware OpenDIAG v1.0.3-gaptrace; driver v1.0.3-1-g9d12e22-dirty.
+# Empty responses mean silence during the 1-second probe, not a negative response.
+
+[[exchange]]
+request = "0100"
+responses = ["416B104100BF9FB990"]
+
+[[exchange]]
+request = "0101"
+responses = ["416B1041010007E5E5"]
+
+[[exchange]]
+request = "0105"
+responses = ["416B10410500"]
+
+[[exchange]]
+request = "010C"
+responses = ["416B10410C0000"]
+
+[[exchange]]
+request = "010D"
+responses = ["416B10410D00"]
+
+[[exchange]]
+request = "0900"
+responses = []
+
+[[exchange]]
+request = "03"
+responses = []
+
+[[exchange]]
+request = "07"
+responses = []

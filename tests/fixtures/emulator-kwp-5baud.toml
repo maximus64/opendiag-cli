@@ -1,0 +1,40 @@
+# OBD2 emulator, ISO 14230-4 at 10400 bit/s, 5-baud address 33.
+# Captured 2026-10-12 through OpenDIAG J2534 05.00; key bytes E9 8F.
+# Raw adapter messages include headers but omit the adapter-managed checksum.
+# The emulator advertises 0160 without answering it; Mode 09 data is malformed.
+
+[[exchange]]
+request = "0100"
+responses = ["86F1114100FFFFFFFF"]
+
+[[exchange]]
+request = "0120"
+responses = ["86F1114120FFFFFFFF"]
+
+[[exchange]]
+request = "0140"
+responses = ["86F1114140FFFFFFFF"]
+
+[[exchange]]
+request = "0160"
+responses = []
+
+[[exchange]]
+request = "010C"
+responses = ["84F111410C0000"]
+
+[[exchange]]
+request = "010D"
+responses = ["83F111410D00"]
+
+[[exchange]]
+request = "0105"
+responses = ["83F111410500"]
+
+[[exchange]]
+request = "0900"
+responses = ["87F1114900FFFFFFFFFF"]
+
+[[exchange]]
+request = "0902"
+responses = ["87F1114902014C444331", "87F11149020232333435", "87F11149020336373839", "87F11149020441424344", "87F11149020545000000"]

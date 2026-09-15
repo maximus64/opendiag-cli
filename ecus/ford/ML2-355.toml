@@ -1,0 +1,5 @@
+title = "Engine (PCM, ML2-355, manual selection)"
+diag = "obd"
+
+# 2026-10-11: PWM OBD replies from 0x10; Mode 09 did not respond.
+# Standard OBD only; no manufacturer services or programming definition.

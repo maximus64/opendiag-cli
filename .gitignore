@@ -1,3 +1,5 @@
 /target
 *.rwd
 *.bin
+.DS_Store
+/dist

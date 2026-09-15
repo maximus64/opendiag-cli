@@ -1,0 +1,4 @@
+title = "Engine (GM VPW PCM, label 12200411)"
+diag = "obd"
+match = [{ obd = 2, pattern = "1GNFK16Z*" }]
+

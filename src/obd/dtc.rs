@@ -31,7 +31,9 @@ pub fn get_dtc_description(code: &str) -> &'static str {
         "P0122" => "Throttle/Pedal Position Sensor (TPS) 'A' Circuit Low Input",
         "P0123" => "Throttle/Pedal Position Sensor (TPS) 'A' Circuit High Input",
         "P0125" => "Insufficient Coolant Temperature for Closed Loop Fuel Control",
-        "P0128" => "Coolant Thermostat (Coolant Temperature Below Thermostat Regulating Temperature)",
+        "P0128" => {
+            "Coolant Thermostat (Coolant Temperature Below Thermostat Regulating Temperature)"
+        }
         "P0130" => "O2 Sensor Circuit (Bank 1, Sensor 1)",
         "P0131" => "O2 Sensor Circuit Low Voltage (Bank 1, Sensor 1)",
         "P0132" => "O2 Sensor Circuit High Voltage (Bank 1, Sensor 1)",
@@ -143,7 +145,7 @@ pub fn get_dtc_description(code: &str) -> &'static str {
         "P2649" => "'A' Rocker Arm Actuator Control Circuit High (Bank 1)",
         "P2654" => "'B' Rocker Arm Actuator System Stuck On (Bank 2)",
         "P2659" => "'B' Rocker Arm Actuator Control Circuit Low (Bank 2)",
-        
+
         // == Chassis Codes (C-Series) ==
         "C0000" => "Vehicle Speed Information Circuit Malfunction",
         "C0035" => "Left Front Wheel Speed Sensor Circuit Malfunction",
@@ -181,7 +183,7 @@ pub fn get_dtc_description(code: &str) -> &'static str {
         "U0164" => "Lost Communication With HVAC Control Module",
         "U0184" => "Lost Communication With Radio",
         "U0401" => "Invalid Data Received From ECM/PCM",
-        
+
         // -- Default Case for Unknown Codes --
         _ => "Unknown DTC - Consult vehicle-specific service manual",
     }

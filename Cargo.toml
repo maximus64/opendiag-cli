@@ -4,12 +4,33 @@ version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
 
+[[bin]]
+name = "opendiag"
+path = "src/main.rs"
+doc = false
+required-features = ["j2534"]
+
+[features]
+default = ["j2534"]
+j2534 = ["dep:libloading", "dep:winreg"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 clap = { version = "4.5.45", features = ["derive"] }
 colored = "3.0.0"
-serialport = "4.3"
+libloading = { version = "0.8", optional = true }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+ctrlc = "3.4"
+clap_complete = "4.5"
+
+[target.'cfg(windows)'.dependencies]
+winreg = { version = "0.52", optional = true }
 
 [dev-dependencies]
 tempfile = "3.8"
+
+[build-dependencies]
+toml = "0.8"

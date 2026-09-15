@@ -1,0 +1,30 @@
+# Captured 2026-10-11 using J2534 05.00, adapter-managed checksums.
+# ISO9141 at 10400 bit/s, pin 7, five-baud address 33, key bytes 08 08.
+# Firmware: OpenDIAG v1.0.3-gaptrace; driver: v1.0.3-1-g9d12e22-dirty.
+
+[[exchange]]
+request = "0100"
+responses = ["486B094100BE3FA811"]
+
+[[exchange]]
+request = "0900"
+responses = ["486B09490001FF000000"]
+
+[[exchange]]
+request = "0902"
+responses = [
+    "486B0949020100000031",
+    "486B094902024847434D",
+    "486B0949020335363830",
+    "486B0949020435413032",
+    "486B0949020530393537",
+]
+
+[[exchange]]
+request = "0904"
+responses = [
+    "486B0949040133373830",
+    "486B09490402352D5241",
+    "486B09490403442D3333",
+    "486B0949040435300000",
+]

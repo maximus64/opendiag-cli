@@ -1,0 +1,57 @@
+title = "Engine (PCM, 37820-RGW)"
+diag = "uds"
+
+match = [{ data = 0xF181, pattern = "37805-RGW-*" }]
+flash = { strategy = "honda_can", status = "untested", expect = [{ data = 0xF181, pattern = "37805-RGW-*" }] }
+
+[service.idle-relearn]
+title = "Idle relearn"
+description = "Procedure is not implemented yet."
+safety = "changes-settings"
+status = "untested"
+run = "honda::relearn_idle"
+
+[[signal]]
+field = "did_2610=0x2610"
+
+[[signal]]
+field = "did_2611=0x2611"
+
+[[signal]]
+field = "did_2612=0x2612"
+
+[[signal]]
+field = "did_2613=0x2613"
+
+[[signal]]
+field = "did_2615=0x2615"
+
+[[signal]]
+field = "did_2660=0x2660"
+
+[[signal]]
+field = "did_2661=0x2661"
+
+[[signal]]
+field = "did_2662=0x2662"
+
+[[signal]]
+field = "did_2663=0x2663"
+
+[[signal]]
+field = "did_2664=0x2664"
+
+[[signal]]
+field = "did_2665=0x2665"
+
+[[signal]]
+field = "did_2668=0x2668"
+
+[[signal]]
+field = "did_266c=0x266C"
+
+[[signal]]
+field = "did_266f=0x266F"
+
+[[signal]]
+field = "did_2673=0x2673"

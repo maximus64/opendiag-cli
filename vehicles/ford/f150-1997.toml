@@ -1,0 +1,16 @@
+make = "Ford"
+model = "F-150"
+years = [{ from = 1997, to = 1997 }]
+# Manual selection: no VIN or electronic hardware identity was available.
+vin = []
+
+[bus.main]
+protocol = "j1850pwm"
+bitrate = 41600
+pins = [2, 10]
+
+[module.engine]
+label = "Engine (PCM)"
+uses = "ford/ML2-355"
+bus = "main"
+address = 0x10

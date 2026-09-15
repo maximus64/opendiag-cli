@@ -1,0 +1,5 @@
+title = "Engine (PCM, 37820-RGL)"
+diag = "uds"
+
+match = [{ data = 0xF181, pattern = "37805-RGL-*" }]
+flash = { strategy = "honda_can", status = "untested", expect = [{ data = 0xF181, pattern = "37805-RGL-*" }] }

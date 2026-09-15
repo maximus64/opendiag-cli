@@ -1,0 +1,16 @@
+make = "Honda"
+model = "Accord"
+years = [{ from = 2005, to = 2005 }]
+vin = ["1HGCM568"]
+
+[bus.main]
+protocol = "iso9141"
+bitrate = 10400
+pins = [7]
+init_address = 0x33
+
+[module.engine]
+label = "Engine (PCM)"
+uses = "honda/37820-RAD"
+bus = "main"
+address = 0x09

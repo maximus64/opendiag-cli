@@ -1,0 +1,15 @@
+# OBD2 emulator, ISO 14230-4 fast initialization, 10400 bit/s on pin 7.
+# Captured 2026-10-12 through OpenDIAG J2534 05.00; key bytes EF 8F.
+# Headers included; the adapter handles checksums.
+
+[[exchange]]
+request = "81"
+responses = ["83F111C1EF8F"]
+
+[[exchange]]
+request = "0100"
+responses = ["86F1114100FFFFFFFF"]
+
+[[exchange]]
+request = "010C"
+responses = ["84F111410C0000"]

@@ -48,7 +48,7 @@ impl HondaRwdParser {
         idx += 3;
 
         // Only CAN flashing RWD files are supported
-        if indicator_bytes != &[0x5a, 0x0d, 0x0a] {
+        if indicator_bytes != [0x5a, 0x0d, 0x0a] {
             return Err("Not supported - invalid indicator bytes".to_string());
         }
 
@@ -56,7 +56,9 @@ impl HondaRwdParser {
         let mut headers: Vec<Vec<Vec<u8>>> = Vec::new();
         for header_idx in 0..6 {
             if idx >= data.len() {
-                return Err(format!("Unexpected end of file while reading header {}", header_idx));
+                return Err(format!(
+                    "Unexpected end of file while reading header {header_idx}"
+                ));
             }
 
             let count = data[idx] as usize;
@@ -65,14 +67,18 @@ impl HondaRwdParser {
             let mut header: Vec<Vec<u8>> = Vec::new();
             for _ in 0..count {
                 if idx >= data.len() {
-                    return Err("Unexpected end of file while reading header entry count".to_string());
+                    return Err(
+                        "Unexpected end of file while reading header entry count".to_string()
+                    );
                 }
 
                 let length = data[idx] as usize;
                 idx += 1;
 
                 if idx + length > data.len() {
-                    return Err("Unexpected end of file while reading header entry data".to_string());
+                    return Err(
+                        "Unexpected end of file while reading header entry data".to_string()
+                    );
                 }
 
                 let v = data[idx..idx + length].to_vec();
@@ -139,22 +145,18 @@ impl HondaRwdParser {
 
         // Build versions map
         let mut versions = HashMap::new();
-        for i in 0..headers[3].len() {
+        for (version, token) in headers[3].iter().zip(&headers[4]) {
             // Remove null bytes from version
-            let version_bytes: Vec<u8> = headers[3][i]
-                .iter()
-                .filter(|&&b| b != 0)
-                .copied()
-                .collect();
-            versions.insert(version_bytes, headers[4][i].clone());
+            let version_bytes: Vec<u8> = version.iter().filter(|&&b| b != 0).copied().collect();
+            versions.insert(version_bytes, token.clone());
         }
 
         // Calculate CAN address
-        let can_address_offset_byte = if !headers[2].is_empty() && !headers[2][0].is_empty() {
-            headers[2][0][0]
-        } else {
-            0
-        };
+        let can_address_offset_byte = headers[2]
+            .first()
+            .and_then(|entry| entry.first())
+            .copied()
+            .ok_or("Missing target ECU address in Honda RWD header")?;
         let can_address = 0x18DA00F1 | ((can_address_offset_byte as u32) << 8);
 
         // Get decryption key

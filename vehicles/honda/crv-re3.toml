@@ -1,0 +1,21 @@
+make = "Honda"
+model = "CR-V"
+chassis = "RE3"
+years = [{ from = 2007, to = 2009 }]
+vin = ["3CZRE3", "5J6RE3", "JHLRE3"]
+
+[bus.main]
+protocol = "can29"
+bitrate = 500000
+
+[module.engine]
+label = "Engine (ECU)"
+uses = "honda/37820-RZA"
+bus = "main"
+request = 0x18DA11F1
+
+[module.transmission]
+label = "Transmission (TCU)"
+bus = "main"
+request = 0x18DA1DF1
+years = [{ from = 2008, to = 2008 }]

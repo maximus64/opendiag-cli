@@ -1,0 +1,15 @@
+make = "Chevrolet"
+model = "Suburban 1500 4WD (5.3 L L59 FFV)"
+years = [{ from = 2002, to = 2002 }]
+vin = ["1GNFK16Z"]
+
+[bus.main]
+protocol = "j1850vpw"
+bitrate = 10400
+pins = [2]
+
+[module.engine]
+label = "Engine (PCM)"
+uses = "gm/12200411"
+bus = "main"
+address = 0x10

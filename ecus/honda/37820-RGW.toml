@@ -2,7 +2,14 @@ title = "Engine (PCM, 37820-RGW)"
 diag = "uds"
 
 match = [{ data = 0xF181, pattern = "37805-RGW-*" }]
-flash = { strategy = "honda_can", status = "untested", expect = [{ data = 0xF181, pattern = "37805-RGW-*" }] }
+
+[flash]
+strategy = "honda_can"
+status = "verified"
+expect = [{ data = 0xF181, pattern = "37805-RGW-*" }]
+verified_on = [
+    "2026-10-30: successful Honda RWD flash on a 2008 Honda Odyssey EX-L with VCM",
+]
 
 [service.idle-relearn]
 title = "Idle relearn"

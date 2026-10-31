@@ -106,7 +106,24 @@ fn check_programming_voltage(
     Ok(())
 }
 
+/// The battery check, with a failure reported as a warning when the caller has
+/// declared a supply outside the battery limits acceptable.
 fn battery_voltage_check(
+    protocol: &mut ObdProtocol,
+    system: SystemVoltage,
+    skip: bool,
+) -> Result<(String, CheckStatus), DiagError> {
+    let (text, status) = battery_voltage_limits(protocol, system)?;
+    if skip && status == CheckStatus::Fail {
+        return Ok((
+            format!("{text}; not enforced by request"),
+            CheckStatus::Warn,
+        ));
+    }
+    Ok((text, status))
+}
+
+fn battery_voltage_limits(
     protocol: &mut ObdProtocol,
     system: SystemVoltage,
 ) -> Result<(String, CheckStatus), DiagError> {
@@ -192,6 +209,7 @@ fn calculate_unlock_key(seed: u16, key: &[u8]) -> Result<u16, DiagError> {
 /// hand it to [`HondaCanBusStrategy::perform_flash`].
 struct FlashJob {
     system_voltage: SystemVoltage,
+    skip_battery_check: bool,
     /// Download start address for RequestDownload.
     start_address: u32,
     /// The raw firmware bytes to transfer.
@@ -304,7 +322,8 @@ impl<'a> HondaCanBusStrategy<'a> {
     /// ends — success, error, or panic.
     fn perform_flash(&mut self, job: FlashJob, cancel: &Cancel) -> Result<(), DiagError> {
         // Confirmation may have left the ignition on long enough to drain the battery.
-        let (battery, status) = battery_voltage_check(self.protocol, job.system_voltage)?;
+        let (battery, status) =
+            battery_voltage_check(self.protocol, job.system_voltage, job.skip_battery_check)?;
         match status {
             CheckStatus::Fail => {
                 return Err(DiagError::PreflightFailed(format!("battery: {battery}")));
@@ -590,8 +609,11 @@ impl<'a> FlashStrategy for HondaCanBusStrategy<'a> {
                 None
             }
         };
-        let (battery, status) =
-            battery_voltage_check(self.protocol, request.options.system_voltage)?;
+        let (battery, status) = battery_voltage_check(
+            self.protocol,
+            request.options.system_voltage,
+            request.options.skip_battery_check,
+        )?;
         preflight.add("battery", battery, status);
         let seconds = request.image.size as f64 * 8.0 / self.protocol.bus().bitrate as f64;
         preflight.add("duration", format!("at least {seconds:.1} s at {} bit/s; erase time and protocol overhead are additional", self.protocol.bus().bitrate), CheckStatus::Info);
@@ -602,6 +624,7 @@ impl<'a> FlashStrategy for HondaCanBusStrategy<'a> {
             };
             self.job = Some(FlashJob {
                 system_voltage: request.options.system_voltage,
+                skip_battery_check: request.options.skip_battery_check,
                 start_address: request.options.start_address.unwrap(),
                 firmware,
                 decryption_key,
@@ -1149,6 +1172,40 @@ mod tests {
             assert!(!st.erased);
             assert!(!st.unlocked);
             assert!(st.programming_voltage.is_empty());
+        }
+    }
+
+    /// A declared bench supply turns the limits into a warning, in preflight
+    /// and in the recheck before programming voltage goes on.
+    #[test]
+    fn skip_battery_check_flashes_outside_the_limits_with_a_warning() {
+        let rwd = RwdFile::default();
+        let file = write_temp(".rwd", &rwd.encode());
+        for mv in [11_980, 15_001] {
+            let ecu = FakeEcu::new(ECU_RESPONSE_ID, CALIBRATION_ID, &rwd.tokens[0]);
+            ecu.measure_battery_as(mv);
+            let mut protocol = protocol_on(&ecu);
+            let events = RecordingEvents::default();
+            protocol.set_events(Box::new(events.clone()));
+
+            HondaCanBusStrategy::new(&mut protocol)
+                .flash(
+                    file.path(),
+                    &FlashOptions {
+                        skip_battery_check: true,
+                        ..Default::default()
+                    },
+                )
+                .expect("a declared bench supply may flash");
+
+            assert!(ecu.state().erased, "{mv} mV");
+            let recorded = events.0.borrow();
+            assert!(
+                recorded
+                    .iter()
+                    .any(|event| event.contains("Battery") && event.contains("not enforced")),
+                "{mv} mV: {recorded:?}"
+            );
         }
     }
 

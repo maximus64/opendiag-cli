@@ -229,7 +229,9 @@ system; omission defaults to 12 V. Flashing checks battery voltage before
 confirmation and again before programming begins. See the
 [vehicle definition guide](vehicles/README.md#vehicle-composition) for voltage
 limits and configuration. Use a stable supply that meets the manufacturer's
-programming requirements.
+programming requirements. On a bench, where a regulated supply stands in for
+the battery, `--skip-battery-check` reports a voltage outside those limits as a
+warning instead of refusing to flash; the measured voltage is still shown.
 
 Preflight checks finish before confirmation, and programming uses the same
 bytes and options that were checked. Untested destructive operations require

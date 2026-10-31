@@ -49,6 +49,7 @@ impl Staged {
         options.start_address = args.start_address;
         options.security_key = args.security_key.as_ref().map(|bytes| bytes.0.clone());
         options.tokens = args.tokens.clone();
+        options.skip_battery_check = args.skip_battery_check;
         Ok(Self {
             bytes,
             options: options.snapshot_tokens().map_err(usage)?,

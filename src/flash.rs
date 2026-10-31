@@ -18,6 +18,9 @@ pub struct FlashOptions {
     pub tokens: Option<PathBuf>,
     /// Nominal battery voltage; vehicle workflows use the selected definition.
     pub system_voltage: SystemVoltage,
+    /// Report a supply voltage outside the battery limits as a warning instead
+    /// of refusing to flash, for a bench supply rather than a vehicle battery.
+    pub skip_battery_check: bool,
     pub(crate) token_data: Option<Vec<u8>>,
 }
 impl FlashOptions {

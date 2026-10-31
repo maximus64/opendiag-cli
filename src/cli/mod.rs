@@ -259,6 +259,10 @@ struct FlashArgs {
     security_key: Option<HexBytes>,
     #[arg(long)]
     tokens: Option<PathBuf>,
+    /// Warn instead of refusing when the supply is outside the battery limits
+    /// (a regulated bench supply rather than a vehicle battery)
+    #[arg(long)]
+    skip_battery_check: bool,
 }
 #[derive(Subcommand, Debug)]
 enum VehicleCommand {

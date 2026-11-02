@@ -103,6 +103,9 @@ pub(super) fn run(action: &VehicleCommand, selected: Option<&str>) -> Result {
                         if let Some(flash) = definition.flash {
                             detail("flash", format!("{} ({})", flash.strategy, flash.status));
                         }
+                        if let Some(backup) = definition.backup {
+                            detail("backup", format!("{} ({})", backup.strategy, backup.status));
+                        }
                         for signal in definition.signals {
                             detail(
                                 "signal",

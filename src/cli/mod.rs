@@ -281,10 +281,44 @@ enum VehicleCommand {
 }
 #[derive(Subcommand, Debug)]
 enum EcuCommand {
+    /// Find responding ECUs
     Scan,
+    /// Read an ECU's identification
     #[command(display_order = 9)]
-    Info {
+    Info { ecu: String },
+    /// Save an ECU's stored data to a backup file
+    #[command(display_order = 10)]
+    Backup {
+        /// ECU name from the vehicle definition, e.g. engine
         ecu: String,
+        /// The backup file to create (JSON); an existing file is never replaced
+        #[arg(short, long, value_name = "FILE")]
+        output: PathBuf,
+        /// Allow a backup that has not been verified on a vehicle yet
+        #[arg(long)]
+        allow_untested: bool,
+    },
+    /// Write a saved backup to a replacement ECU
+    #[command(display_order = 11)]
+    Restore {
+        /// ECU name from the vehicle definition, e.g. engine
+        ecu: String,
+        /// The backup file to write; the ECU's current data is saved next to it first
+        #[arg(short, long, value_name = "FILE")]
+        input: PathBuf,
+        /// Run the checks and show what would change without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the final question; the checks still run
+        #[arg(long)]
+        yes: bool,
+        /// Allow a restore that has not been verified on a vehicle yet
+        #[arg(long)]
+        allow_untested: bool,
+        /// Warn instead of refusing when the supply is outside the battery limits
+        /// (a regulated bench supply rather than a vehicle battery)
+        #[arg(long)]
+        skip_battery_check: bool,
     },
 }
 #[derive(Subcommand, Debug)]
@@ -457,7 +491,10 @@ fn validate(cli: &mut Cli) -> Result {
             action: DidCommand::Read { target, .. } | DidCommand::Scan { target, .. },
         } => target.ecu.as_deref(),
         Command::Ecu {
-            action: EcuCommand::Info { ecu },
+            action:
+                EcuCommand::Info { ecu }
+                | EcuCommand::Backup { ecu, .. }
+                | EcuCommand::Restore { ecu, .. },
         } => Some(ecu.as_str()),
         _ => None,
     };
@@ -487,6 +524,32 @@ fn validate(cli: &mut Cli) -> Result {
                 }
             }
         }
+    }
+    // Backup files and ECU support are checked before any hardware is opened.
+    match &cli.command {
+        Command::Ecu {
+            action: EcuCommand::Backup { ecu, output, .. },
+        } => {
+            if output.exists() {
+                return Err(usage(format!(
+                    "{} already exists; choose another file",
+                    output.display()
+                ))
+                .into());
+            }
+            if let Some(vehicle) = &vehicle {
+                ecu::validate_backup(vehicle, ecu)?;
+            }
+        }
+        Command::Ecu {
+            action: EcuCommand::Restore { ecu, input, .. },
+        } => {
+            opendiag::backup::EcuBackup::load(input).map_err(usage)?;
+            if let Some(vehicle) = &vehicle {
+                ecu::validate_backup(vehicle, ecu)?;
+            }
+        }
+        _ => {}
     }
     if let Some(selector) = selector {
         if let Ok(value) = number(selector) {
@@ -882,6 +945,25 @@ mod tests {
             vec!["vehicle", "show", "honda/odyssey-rl3"],
             vec!["ecu", "scan"],
             vec!["ecu", "info", "engine"],
+            vec![
+                "ecu",
+                "backup",
+                "engine",
+                "-o",
+                "old-ecu.json",
+                "--allow-untested",
+            ],
+            vec![
+                "ecu",
+                "restore",
+                "engine",
+                "-i",
+                "old-ecu.json",
+                "--dry-run",
+                "--yes",
+                "--allow-untested",
+                "--skip-battery-check",
+            ],
             vec!["did", "read", "0xF181", "61840"],
             vec![
                 "did", "scan", "--start", "0xF180", "--end", "0xF190", "--timing",

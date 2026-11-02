@@ -168,7 +168,7 @@ pub fn read_vin(
             protocol.set_ecu(ecu)?;
             match diag::services("uds", protocol)?
                 .read_data(DataId::Common(0xF190))
-                .and_then(|data| decode_vin(&diag::text(&data)))
+                .and_then(|data| decode_vin(&diag::vin_text(&data)))
             {
                 Ok(info) => {
                     observed.insert(info.vin.clone(), info);
@@ -732,6 +732,19 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(cache.load(VIN, "changed catalog").unwrap().is_none());
+    }
+    #[test]
+    fn the_uds_vin_fallback_accepts_a_length_prefixed_vin() {
+        // Captured from a 2008 CR-V (37805-RZA-A560).
+        let (mut protocol, link) =
+            protocol_with(&["7F0911", "62F1901133435A5245333833373847373039333837000000"]);
+        discovery(&link);
+        assert_eq!(
+            read_vin(&mut protocol, None, &Cancel::default())
+                .unwrap()
+                .vin,
+            "3CZRE38378G709387"
+        );
     }
     #[test]
     fn vin_falls_back_to_uds_then_manual_input_and_conflicts_are_errors() {

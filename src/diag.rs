@@ -161,6 +161,17 @@ fn common(id: DataId) -> Result<u16, DiagError> {
 pub fn text(data: &[u8]) -> String {
     String::from_utf8_lossy(data).trim_matches('\0').to_string()
 }
+/// The text of a VIN DID (0xF190). Some ECUs send a length byte before the VIN
+/// and pad after it; a plain VIN starts with a character well above any such
+/// length, so it is not mistaken for one.
+pub fn vin_text(data: &[u8]) -> String {
+    match data.split_first() {
+        Some((&length, rest)) if usize::from(length) <= rest.len() => {
+            text(&rest[..usize::from(length)])
+        }
+        _ => text(data),
+    }
+}
 impl DiagServices for Uds<'_> {
     fn session(&mut self, session: Session) -> Result<(), DiagError> {
         let id = match session {
@@ -245,10 +256,10 @@ impl DiagServices for Uds<'_> {
     }
     fn ecu_reset(&mut self, kind: ResetKind) -> Result<(), DiagError> {
         let id = match kind {
-            ResetKind::Hard => 1,
-            ResetKind::KeyOffOn => 2,
-            ResetKind::Soft => 3,
-        };
+            ResetKind::Hard => uds::ResetType::Hard,
+            ResetKind::KeyOffOn => uds::ResetType::KeyOffOn,
+            ResetKind::Soft => uds::ResetType::Soft,
+        } as u8;
         let response = uds::call_raw(self.0, &[0x11, id])?;
         if response.get(1) != Some(&id) {
             return Err(DiagError::InvalidResponse(
@@ -266,7 +277,7 @@ impl DiagServices for Uds<'_> {
                         info.calibration = Some(text(&data));
                     }
                     if id == 0xF190 {
-                        info.vin = Some(text(&data));
+                        info.vin = Some(vin_text(&data));
                     }
                     info.identification.insert(id, data);
                 }
@@ -324,6 +335,16 @@ impl DiagServices for Uds<'_> {
 mod tests {
     use super::*;
     use crate::test_support::{protocol_on, protocol_with, FakeEcu};
+    #[test]
+    fn vin_text_removes_a_length_byte_and_padding() {
+        // Captured from a 2008 CR-V (37805-RZA-A560).
+        let captured =
+            crate::utils::hex_to_bytes("1133435A5245333833373847373039333837000000").unwrap();
+        assert_eq!(vin_text(&captured), "3CZRE38378G709387");
+        assert_eq!(vin_text(b"1HGCM82633A004352"), "1HGCM82633A004352");
+        assert_eq!(vin_text(b"1HGCM82633A004352\0\0"), "1HGCM82633A004352");
+        assert_eq!(vin_text(&[]), "");
+    }
     #[test]
     fn service_calls_wait_on_pending_without_resending_and_check_the_echo() {
         let (mut protocol, link) =

@@ -93,7 +93,8 @@ pub struct Selection<'a> {
 pub struct RunOptions {
     pub dry_run: bool,
     pub allow_untested: bool,
-    pub verified_on: Vec<String>,
+    /// The ECU definition marks this strategy as verified.
+    pub verified: bool,
     pub expected: Vec<(u16, String)>,
     pub target_unmatched: bool,
 }
@@ -131,11 +132,7 @@ pub fn run_for_vehicle(
         dry_run: options.dry_run,
         allow_untested: options.allow_untested,
         target_unmatched: !ecu.selection.matched,
-        verified_on: if definition.status == crate::vehicle::ecu_def::Status::Verified {
-            definition.verified_on.clone()
-        } else {
-            Vec::new()
-        },
+        verified: definition.status == crate::vehicle::ecu_def::Status::Verified,
         expected: definition
             .expect
             .iter()
@@ -403,7 +400,7 @@ pub fn run(
             CheckStatus::Fail,
         );
     }
-    if options.verified_on.is_empty() {
+    if !options.verified {
         preflight.add(
             "status",
             if options.allow_untested {
@@ -418,11 +415,7 @@ pub fn run(
             },
         );
     } else {
-        preflight.add(
-            "status",
-            format!("verified on {}", options.verified_on.join(", ")),
-            CheckStatus::Ok,
-        );
+        preflight.add("status", "verified", CheckStatus::Ok);
     }
     if options.dry_run {
         return Ok(preflight);
@@ -757,9 +750,7 @@ mod tests {
 
         preflight.validate().unwrap();
         assert!(preflight.checks.iter().any(|check| {
-            check.name == "status"
-                && check.status == CheckStatus::Ok
-                && check.value.starts_with("verified on ")
+            check.name == "status" && check.status == CheckStatus::Ok && check.value == "verified"
         }));
         assert!(preflight
             .checks

@@ -27,6 +27,7 @@
 //! | [`identify`], [`scan`] | Detect the bus, read the vehicle identification number (VIN), match vehicle definitions, discover responding ECUs, and scan data identifiers (DIDs). |
 //! | [`vehicle`] | Load the embedded catalog, resolve ECU inheritance and variants, and expose each vehicle's signals, service procedures, and programming rules. |
 //! | [`sampler`], [`datalog`] | Poll OBD signals and DID fields through a shared sampling engine, then deliver samples to terminal or CSV output. |
+//! | [`backup`] | Back up an ECU's stored data (VIN, immobilizer pairing, learned values) to a JSON file and restore it to a replacement ECU, through a per-ECU strategy. |
 //! | [`flash`] | Inspect firmware images, prepare immutable programming input, and run the selected programming strategy. The current strategy handles Honda RWD containers and explicitly configured raw images. |
 //! | [`preflight`], [`events`] | Share operation checks, confirmation prompts, progress reporting, and cooperative cancellation across frontends. |
 //! | [`errors`], [`value`], [`utils`] | Provide common error types, decoded values, and byte/number conversion helpers. |
@@ -111,6 +112,7 @@
 //! builds with J2534 support require the `i686-pc-windows-gnu` target to match
 //! 32-bit driver DLLs; Linux and macOS use shared libraries.
 
+pub mod backup;
 #[cfg(feature = "j2534")]
 pub mod config;
 pub mod datalog;

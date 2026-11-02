@@ -226,7 +226,6 @@ impl<'a> SelectedVehicle<'a> {
                     strategy: flash.strategy.clone(),
                     start_address: flash.start_address,
                     status: Status::Untested,
-                    verified_on: Vec::new(),
                     expect: Vec::new(),
                 }),
                 ..Default::default()

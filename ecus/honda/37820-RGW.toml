@@ -7,9 +7,11 @@ match = [{ data = 0xF181, pattern = "37805-RGW-*" }]
 strategy = "honda_can"
 status = "verified"
 expect = [{ data = 0xF181, pattern = "37805-RGW-*" }]
-verified_on = [
-    "2026-10-30: successful Honda RWD flash on a 2008 Honda Odyssey EX-L with VCM",
-]
+
+# Serial EEPROM through the Honda BA service; derived from the A960 firmware.
+[backup]
+strategy = "honda_ba"
+status = "untested"
 
 [service.idle-relearn]
 title = "Idle relearn"

@@ -27,12 +27,6 @@ const PROGRAMMING_VOLTAGE_MV: u32 = 5000;
 /// measurement.
 const PROGRAMMING_VOLTAGE_TOLERANCE_PERCENT: u32 = 10;
 
-// Application policy per 12 V of nominal lead-acid battery voltage.
-// These are not ECU-specific programming limits.
-const BATTERY_MIN_MV: u32 = 12_000;
-const BATTERY_RECOMMENDED_MIN_MV: u32 = 12_400;
-const BATTERY_MAX_MV: u32 = 15_000;
-
 /// How long to let programming voltage settle before talking to the ECU.
 /// Zero under test, where the fake ECU has no rail to charge and the suite
 /// would otherwise sit through it once per flash test.
@@ -104,77 +98,6 @@ fn check_programming_voltage(
         "[HONDA_CAN] Programming voltage measured: {measured} mV"
     )));
     Ok(())
-}
-
-/// The battery check, with a failure reported as a warning when the caller has
-/// declared a supply outside the battery limits acceptable.
-fn battery_voltage_check(
-    protocol: &mut ObdProtocol,
-    system: SystemVoltage,
-    skip: bool,
-) -> Result<(String, CheckStatus), DiagError> {
-    let (text, status) = battery_voltage_limits(protocol, system)?;
-    if skip && status == CheckStatus::Fail {
-        return Ok((
-            format!("{text}; not enforced by request"),
-            CheckStatus::Warn,
-        ));
-    }
-    Ok((text, status))
-}
-
-fn battery_voltage_limits(
-    protocol: &mut ObdProtocol,
-    system: SystemVoltage,
-) -> Result<(String, CheckStatus), DiagError> {
-    let nominal = system.volts();
-    let scale = u32::from(nominal) / 12;
-    let minimum = BATTERY_MIN_MV * scale;
-    let recommended_minimum = BATTERY_RECOMMENDED_MIN_MV * scale;
-    let maximum = BATTERY_MAX_MV * scale;
-    let mv = match protocol.read_battery_mv() {
-        Ok(mv) => mv,
-        Err(error) if error.kind() == crate::errors::ErrorKind::Unsupported => {
-            return Ok((
-                format!("unavailable: {error}; verify supply voltage for the {nominal} V system before programming"),
-                CheckStatus::Warn,
-            ));
-        }
-        Err(error) => return Err(error),
-    };
-    let voltage = mv as f64 / 1000.0;
-    if mv < minimum {
-        return Ok((
-            format!(
-                "{voltage:.2} V (below {:.2} V minimum for a {nominal} V system; charge the battery or connect a regulated programming power supply)",
-                minimum as f64 / 1000.0
-            ),
-            CheckStatus::Fail,
-        ));
-    }
-    if mv > maximum {
-        return Ok((
-            format!(
-                "{voltage:.2} V (above {:.2} V maximum for a {nominal} V system; check the supply voltage)",
-                maximum as f64 / 1000.0
-            ),
-            CheckStatus::Fail,
-        ));
-    }
-    if mv < recommended_minimum {
-        return Ok((
-            format!("{voltage:.2} V (low margin for a {nominal} V system; charge the battery or connect a regulated programming power supply)"),
-            CheckStatus::Warn,
-        ));
-    }
-    Ok((
-        format!(
-            "{voltage:.2} V (within {:.2}-{:.2} V preflight range for a {nominal} V system)",
-            recommended_minimum as f64 / 1000.0,
-            maximum as f64 / 1000.0
-        ),
-        CheckStatus::Ok,
-    ))
 }
 
 fn calculate_unlock_key(seed: u16, key: &[u8]) -> Result<u16, DiagError> {
@@ -322,8 +245,11 @@ impl<'a> HondaCanBusStrategy<'a> {
     /// ends — success, error, or panic.
     fn perform_flash(&mut self, job: FlashJob, cancel: &Cancel) -> Result<(), DiagError> {
         // Confirmation may have left the ignition on long enough to drain the battery.
-        let (battery, status) =
-            battery_voltage_check(self.protocol, job.system_voltage, job.skip_battery_check)?;
+        let (battery, status) = crate::preflight::battery_check(
+            self.protocol,
+            job.system_voltage,
+            job.skip_battery_check,
+        )?;
         match status {
             CheckStatus::Fail => {
                 return Err(DiagError::PreflightFailed(format!("battery: {battery}")));
@@ -510,15 +436,9 @@ impl<'a> FlashStrategy for HondaCanBusStrategy<'a> {
     fn info(&mut self) -> Result<EcuInfo, DiagError> {
         let calibration = self.read_calibration_id()?;
         let bytes = uds::read_data_by_identifier(self.protocol, uds::DataIdentifier::Vin as u16)?;
-        let vin = match bytes.split_first() {
-            Some((&len, rest)) if len as usize <= rest.len() => {
-                crate::diag::text(&rest[..len as usize])
-            }
-            _ => crate::diag::text(&bytes),
-        };
         Ok(EcuInfo {
             calibration: Some(calibration),
-            vin: Some(vin),
+            vin: Some(crate::diag::vin_text(&bytes)),
             ..Default::default()
         })
     }
@@ -609,7 +529,7 @@ impl<'a> FlashStrategy for HondaCanBusStrategy<'a> {
                 None
             }
         };
-        let (battery, status) = battery_voltage_check(
+        let (battery, status) = crate::preflight::battery_check(
             self.protocol,
             request.options.system_voltage,
             request.options.skip_battery_check,

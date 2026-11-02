@@ -211,3 +211,162 @@ fn raw_firmware_needs_explicit_vehicle_before_loading_a_driver() {
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("config init"));
 }
+
+fn backup_json(software: &str) -> String {
+    let words = vec!["0000"; 256];
+    serde_json::json!({
+        "format": "opendiag-ecu-backup",
+        "version": 1,
+        "created": "2026-11-01T09:12:00Z",
+        "opendiag": "0.0.0",
+        "vehicle": { "id": "honda/odyssey-rl3", "vin": null },
+        "ecu": {
+            "slot": "engine",
+            "definition": "honda/37820-RGW",
+            "software": software,
+            "strategy": "honda_ba"
+        },
+        "blocks": [ { "id": "0", "words": words }, { "id": "1", "words": words } ]
+    })
+    .to_string()
+}
+
+#[test]
+fn backup_and_restore_check_support_and_files_before_loading_the_adapter() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = |name: &str| directory.path().join(name).to_str().unwrap().to_string();
+    std::fs::write(path("good.json"), backup_json("37805-RGW-A960")).unwrap();
+    std::fs::write(
+        path("bad.json"),
+        backup_json("37805-RGW-A960").replace("0000", "00G0"),
+    )
+    .unwrap();
+    std::fs::write(path("existing.json"), "{}").unwrap();
+
+    let new = path("new.json");
+    let backup = |vehicle: &'static str, ecu: &'static str| -> Vec<String> {
+        ["--vehicle", vehicle, "ecu", "backup", ecu, "-o"]
+            .iter()
+            .map(|s| s.to_string())
+            .chain([new.clone()])
+            .collect()
+    };
+    for (args, message) in [
+        (
+            backup("ford/f150-1997", "engine"),
+            "Backup isn't available for Engine",
+        ),
+        (
+            [
+                "--vehicle",
+                "honda/crv-re3",
+                "ecu",
+                "restore",
+                "transmission",
+                "-i",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .chain([path("good.json")])
+            .collect(),
+            "Unknown ECU",
+        ),
+        (
+            backup("honda/accord-2005", "engine"),
+            "Backup isn't available",
+        ),
+        (backup("honda/odyssey-rl3", "body"), "Unknown ECU"),
+        (
+            ["--vehicle", "honda/odyssey-rl3", "ecu", "backup", "engine"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            "--output <FILE>",
+        ),
+        (
+            ["--vehicle", "honda/odyssey-rl3", "ecu", "restore", "engine"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            "--input <FILE>",
+        ),
+    ] {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = run(&args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+        assert!(!stderr.contains("Opening"), "{args:?}: {stderr}");
+    }
+    for (args, message) in [
+        (
+            vec![
+                "--vehicle",
+                "honda/odyssey-rl3",
+                "ecu",
+                "backup",
+                "engine",
+                "-o",
+                &path("existing.json"),
+            ],
+            "already exists",
+        ),
+        (
+            vec![
+                "--vehicle",
+                "honda/odyssey-rl3",
+                "ecu",
+                "restore",
+                "engine",
+                "-i",
+                &path("missing.json"),
+            ],
+            "missing.json",
+        ),
+        (
+            vec![
+                "--vehicle",
+                "honda/odyssey-rl3",
+                "ecu",
+                "restore",
+                "engine",
+                "-i",
+                &path("bad.json"),
+            ],
+            "4 hex digits",
+        ),
+    ] {
+        let output = run(&args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+        assert!(!stderr.contains("Opening"), "{args:?}: {stderr}");
+    }
+
+    for args in [
+        vec![
+            "--vehicle",
+            "honda/odyssey-rl3",
+            "ecu",
+            "backup",
+            "engine",
+            "-o",
+            &path("new.json"),
+        ],
+        vec![
+            "--vehicle",
+            "honda/odyssey-rl3",
+            "ecu",
+            "restore",
+            "engine",
+            "-i",
+            &path("good.json"),
+            "--dry-run",
+        ],
+    ] {
+        let output = run(&args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {stderr}");
+        assert!(stderr.contains("config init"), "{args:?}: {stderr}");
+    }
+}

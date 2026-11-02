@@ -982,3 +982,90 @@ fn definition_reuse_does_not_require_variant_patterns_and_ancestor_guards_are_ke
             .1
     );
 }
+
+#[test]
+fn flash_and_backup_tables_carry_a_status_but_no_evidence_field() {
+    for table in [
+        "[flash]\nstrategy='honda_can'\nstatus='verified'\n",
+        "[backup]\nstrategy='honda_ba'\nstatus='verified'\n",
+    ] {
+        let valid = format!("{BASE}{table}");
+        let with_evidence = format!("{valid}verified_on=['2026-11-02: bench']\n");
+        for (text, ok) in [(valid, true), (with_evidence, false)] {
+            let result = Catalog::from_files(
+                &[("test/car", VEHICLE)],
+                &[("test/pcm", &text)],
+                hooks::Hooks::default(),
+            )
+            .validate();
+            assert_eq!(result.is_ok(), ok, "{text}");
+        }
+    }
+}
+
+#[test]
+fn backup_tables_name_a_strategy_and_status_and_are_inherited() {
+    let validate = |definition: &str| {
+        Catalog::from_files(
+            &[("test/car", VEHICLE)],
+            &[("test/pcm", definition)],
+            hooks::Hooks::default(),
+        )
+        .validate()
+    };
+    validate(&format!(
+        "{BASE}[backup]\nstrategy='honda_ba'\nstatus='untested'\n"
+    ))
+    .unwrap();
+    validate(&format!(
+        "{BASE}[backup]\nstrategy='honda_ba'\nstatus='verified'\n"
+    ))
+    .unwrap();
+    for (name, table) in [
+        ("unknown strategy", "strategy='nope'\nstatus='untested'\n"),
+        (
+            "verified_on is not a backup field",
+            "strategy='honda_ba'\nstatus='verified'\nverified_on=['x']\n",
+        ),
+        (
+            "expect is not a backup field",
+            "strategy='honda_ba'\nstatus='untested'\nexpect=[{data=0xF181,pattern='X*'}]\n",
+        ),
+        ("missing status", "strategy='honda_ba'\n"),
+    ] {
+        assert!(
+            validate(&format!("{BASE}[backup]\n{table}")).is_err(),
+            "{name}"
+        );
+    }
+
+    let catalog = Catalog::from_files(
+        &[("test/car", VEHICLE)],
+        &[
+            (
+                "test/pcm",
+                &format!("{BASE}[backup]\nstrategy='honda_ba'\nstatus='untested'\n"),
+            ),
+            (
+                "test/variant",
+                "title='Variant'\nextends='test/pcm'\nmatch=[{data=0xF181,pattern='ABC*'}]\n",
+            ),
+        ],
+        hooks::Hooks::default(),
+    );
+    catalog.validate().unwrap();
+    let inherited = catalog.definition("test/variant").unwrap().backup.unwrap();
+    assert_eq!(inherited.strategy, "honda_ba");
+}
+
+#[test]
+fn only_the_rgw_and_rza_engine_ecus_support_backup() {
+    let catalog = catalog::embedded();
+    for id in ["honda/37820-RGW", "honda/37820-RZA"] {
+        let backup = catalog.definition(id).unwrap().backup.unwrap();
+        assert_eq!(backup.strategy, "honda_ba", "{id}");
+    }
+    for id in ["honda/37820-RGL", "honda/37820-RGM", "honda/37820-RAD"] {
+        assert!(catalog.definition(id).unwrap().backup.is_none(), "{id}");
+    }
+}

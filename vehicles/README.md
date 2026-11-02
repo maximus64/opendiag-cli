@@ -193,7 +193,9 @@ multiple records leave the ECU unmatched. The `data` and `obd` namespaces
 are distinct; flash expectations continue to require manufacturer `data` IDs.
 
 `flash` contains `strategy`, optional `start_address`, `expect` identity
-patterns, `status` and `verified_on`. Raw bytes cannot establish image
+patterns and `status`. Mark a new entry `untested`; change it to `verified`
+only after the flash succeeded on a real vehicle, and describe the vehicle,
+calibration and adapter in the commit message. Raw bytes cannot establish image
 compatibility: they require explicit `--vehicle`, retain a warning and still
 check `flash.expect` against the ECU. Strategy names are case insensitive.
 

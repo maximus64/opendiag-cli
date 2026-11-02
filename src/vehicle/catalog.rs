@@ -93,6 +93,9 @@ impl Catalog {
             if child.flash.is_none() {
                 child.flash = parent.flash;
             }
+            if child.backup.is_none() {
+                child.backup = parent.backup;
+            }
             let mut signals: BTreeMap<_, _> = parent
                 .signals
                 .into_iter()
@@ -364,9 +367,17 @@ impl Catalog {
                         format!("unknown strategy {}", flash.strategy),
                     ));
                 }
-                trust(&file, "flash.verified_on", flash.status, &flash.verified_on)?;
                 if flash.expect.iter().any(|m| m.pattern.is_empty()) {
                     return Err(invalid(&file, "flash.expect", "patterns must be nonempty"));
+                }
+            }
+            if let Some(backup) = &def.backup {
+                if crate::backup::strategy(&backup.strategy).is_none() {
+                    return Err(invalid(
+                        &file,
+                        "backup.strategy",
+                        format!("unknown strategy {}", backup.strategy),
+                    ));
                 }
             }
             for (name, service) in &def.services {

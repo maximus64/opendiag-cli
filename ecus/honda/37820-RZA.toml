@@ -6,6 +6,8 @@ match = [{ data = 0xF181, pattern = "37805-RZA-*" }]
 strategy = "honda_can"
 status = "verified"
 expect = [{ data = 0xF181, pattern = "37805-RZA-*" }]
-verified_on = [
-    "2026-10-11: successful Honda RWD flash on a 2008 Honda CR-V RE3 2WD, PCM 37820-RZA-*, pre-flash calibration 37805-RZA-A560",
-]
+
+# Serial EEPROM through the Honda BA service.
+[backup]
+strategy = "honda_ba"
+status = "verified"

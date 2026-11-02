@@ -9,12 +9,14 @@
 //! * [`FakeEcu`] is a stateful ECU simulator: it answers UDS requests according
 //!   to the flash state machine and refuses operations attempted out of order.
 //!   It is both the link and the adapter, so flash tests see the programming
-//!   voltage it was given. It is what makes a whole-flash test possible.
+//!   voltage it was given. It is what makes a whole-flash test possible. It
+//!   also simulates Honda serial EEPROM behind the BA service, with a security
+//!   gate that opens only after a power cycle, for backup and restore tests.
 //!
 //! [`RwdFile`] builds `.rwd` container bytes for tests that need a real file.
 
 use std::cell::{Ref, RefCell};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -539,6 +541,39 @@ pub struct EcuState {
     applied_voltage: u32,
     /// What the adapter reports measuring, when it differs from the request.
     measured_voltage_override: Option<u32>,
+
+    // --- serial EEPROM behind the Honda BA service ---
+    /// Words by (channel, word); unset words read as 0xFFFF.
+    eeprom: BTreeMap<(u8, u8), u16>,
+    /// Words that ignore writes, like status registers.
+    read_only: BTreeSet<(u8, u8)>,
+    /// A word that reads differently every time.
+    unstable: Option<(u8, u8)>,
+    /// `10 03` polls still answered before the ECU is switched off.
+    answered_before_off: usize,
+    /// `10 03` polls left unanswered while the ECU is off.
+    off_for: usize,
+    /// Level 0x61 seeds are only granted right after a start.
+    just_powered_on: bool,
+    /// Whether the next start, at the end of `off_for`, opens the security gate.
+    gate_opens_on_start: bool,
+    /// When set, `11 01` restarts the ECU: it is quiet for this many polls,
+    /// and the flag says whether the restart opens the security gate.
+    restart: Option<(usize, bool)>,
+    ba_unlocked: bool,
+    /// After this many BA writes the ECU stops answering.
+    silent_after_writes: Option<usize>,
+    /// Every accepted BA write as (channel, word, value), in order.
+    pub ba_writes: Vec<(u8, u8, u16)>,
+}
+
+/// A BA reply frame: tag, service twice, total length, data, zero-sum checksum.
+fn ba_reply(service: u8, data: &[u8]) -> Vec<u8> {
+    let mut reply = vec![0xFA, service, service, (data.len() + 5) as u8];
+    reply.extend_from_slice(data);
+    let sum = reply.iter().fold(0u8, |sum, b| sum.wrapping_add(*b));
+    reply.push(sum.wrapping_neg());
+    reply
 }
 
 /// The unlock key the ECU expects, computed independently of the flasher's own
@@ -557,6 +592,33 @@ fn expected_unlock_key(seed: u16, secret: &[u8]) -> u16 {
 }
 
 impl EcuState {
+    fn handle_ba(&mut self, req: &[u8]) -> Vec<u8> {
+        if self.session != 0x60 || !self.ba_unlocked {
+            return vec![0x7F, 0xBA, 0x7F];
+        }
+        match (req.get(1), req.len()) {
+            (Some(0x11), 6) => {
+                let at = (req[4], req[5]);
+                let mut value = *self.eeprom.get(&at).unwrap_or(&0xFFFF);
+                if self.unstable == Some(at) {
+                    value = value.wrapping_add(1);
+                    self.eeprom.insert(at, value);
+                }
+                ba_reply(0x11, &value.to_le_bytes())
+            }
+            (Some(0x15), 8) => {
+                let at = (req[4], req[5]);
+                let value = u16::from_le_bytes([req[6], req[7]]);
+                self.ba_writes.push((at.0, at.1, value));
+                if !self.read_only.contains(&at) {
+                    self.eeprom.insert(at, value);
+                }
+                ba_reply(0x15, &[])
+            }
+            _ => vec![0x7F, 0xBA, 0x13],
+        }
+    }
+
     fn violation(&mut self, what: &str) -> Vec<u8> {
         self.protocol_violations.push(what.to_string());
         vec![0x7F, 0x00, 0x22] // conditions not correct
@@ -565,6 +627,7 @@ impl EcuState {
     /// Handles one fully reassembled UDS request, returning the response payload.
     fn handle_uds(&mut self, req: &[u8]) -> Vec<u8> {
         match req[0] {
+            0x10 if req[1] == 0x60 && !self.ba_unlocked => vec![0x7F, 0x10, 0x33],
             // DiagnosticSessionControl
             0x10 => {
                 self.session = req[1];
@@ -588,6 +651,39 @@ impl EcuState {
                     ));
                     vec![0x7F, 0x27, 0x35] // invalid key
                 }
+            }
+            // Honda vendor security access, granted only right after power-up.
+            0x27 if req[1] == 0x61 => {
+                if !self.just_powered_on {
+                    return vec![0x7F, 0x27, 0x22];
+                }
+                let mut r = vec![0x67, 0x61];
+                r.extend_from_slice(&self.seed.to_be_bytes());
+                r
+            }
+            0x27 if req[1] == 0x62 => {
+                let expected = ((self.seed as u32 * 33) >> 2) as u16;
+                let got = u16::from_be_bytes([req[2], req[3]]);
+                if self.just_powered_on && got == expected {
+                    self.ba_unlocked = true;
+                    vec![0x67, 0x62]
+                } else {
+                    self.protocol_violations.push(format!(
+                        "wrong vendor key: got {got:#06x}, want {expected:#06x}"
+                    ));
+                    vec![0x7F, 0x27, 0x35]
+                }
+            }
+            0xBA => self.handle_ba(req),
+            0x11 if req.get(1) == Some(&0x01) && self.restart.is_some() => {
+                let (quiet, opens) = self.restart.unwrap();
+                self.session = 0x01;
+                self.ba_unlocked = false;
+                self.answered_before_off = 0;
+                self.off_for = quiet;
+                self.gate_opens_on_start = opens;
+                self.just_powered_on = quiet == 0 && opens;
+                vec![0x51, 0x01]
             }
             // ReadDataByIdentifier
             0x22 => {
@@ -724,8 +820,69 @@ impl FakeEcu {
         self.inner.borrow_mut().measured_voltage_override = Some(millivolts);
     }
 
+    /// The raw bytes the ECU answers to DID 0xF190.
+    pub fn reply_to_vin_with(&self, data: &[u8]) {
+        self.inner.borrow_mut().vin = data.to_vec();
+    }
+
     pub fn measure_battery_as(&self, millivolts: u32) {
         self.inner.borrow_mut().battery_mv = millivolts;
+    }
+
+    /// Fills both EEPROM channels with `base + index`.
+    pub fn fill_eeprom(&self, base: u16) {
+        let mut st = self.inner.borrow_mut();
+        for channel in 0..2u8 {
+            for word in 0..=255u8 {
+                let index = u16::from(channel) * 256 + u16::from(word);
+                st.eeprom.insert((channel, word), base.wrapping_add(index));
+            }
+        }
+    }
+
+    pub fn eeprom_word(&self, channel: u8, word: u8) -> u16 {
+        *self
+            .inner
+            .borrow()
+            .eeprom
+            .get(&(channel, word))
+            .unwrap_or(&0xFFFF)
+    }
+
+    pub fn make_read_only(&self, channel: u8, word: u8) {
+        self.inner.borrow_mut().read_only.insert((channel, word));
+    }
+
+    pub fn make_unstable(&self, channel: u8, word: u8) {
+        self.inner.borrow_mut().unstable = Some((channel, word));
+    }
+
+    /// The next `answered` `10 03` polls are answered, then the ECU is off for
+    /// `off` polls and comes back up with its security gate open.
+    pub fn power_cycle_after(&self, answered: usize, off: usize) {
+        let mut st = self.inner.borrow_mut();
+        st.answered_before_off = answered;
+        st.off_for = off;
+        st.gate_opens_on_start = true;
+    }
+
+    /// Makes `11 01` restart the ECU, quiet for `quiet` polls; `opens` says
+    /// whether the restart opens the security gate. Without this the ECU
+    /// refuses the reset.
+    pub fn allow_restart(&self, quiet: usize, opens: bool) {
+        self.inner.borrow_mut().restart = Some((quiet, opens));
+    }
+
+    /// Drops vendor access, as when the session times out.
+    pub fn drop_access(&self) {
+        let mut st = self.inner.borrow_mut();
+        st.session = 0x01;
+        st.ba_unlocked = false;
+        st.just_powered_on = false;
+    }
+
+    pub fn go_silent_after_writes(&self, writes: usize) {
+        self.inner.borrow_mut().silent_after_writes = Some(writes);
     }
 
     /// Overrides a block's acknowledgement after the ECU accepts its data.
@@ -752,6 +909,26 @@ impl DiagLink for FakeEcu {
     fn send(&mut self, payload: &[u8]) -> Result<(), DiagError> {
         let mut st = self.inner.borrow_mut();
         st.requests.push(payload.to_vec());
+        // A scripted power cycle plays out over the tester's `10 03` polls.
+        let poll = payload == [0x10, 0x03];
+        if poll && st.answered_before_off > 0 {
+            st.answered_before_off -= 1;
+        } else if poll && st.off_for > 0 {
+            st.off_for -= 1;
+            if st.off_for == 0 {
+                // Started again: default session.
+                st.session = 0x01;
+                st.ba_unlocked = false;
+                st.just_powered_on = st.gate_opens_on_start;
+            }
+            return Ok(());
+        }
+        if st
+            .silent_after_writes
+            .is_some_and(|limit| st.ba_writes.len() >= limit)
+        {
+            return Ok(());
+        }
         let response = st.handle_uds(payload);
         st.outbox.push_back(response);
         Ok(())

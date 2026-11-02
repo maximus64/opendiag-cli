@@ -55,6 +55,14 @@ pub enum SessionType {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[repr(u8)]
+pub enum ResetType {
+    Hard = 1,
+    KeyOffOn = 2,
+    Soft = 3,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[repr(u8)]
 pub enum AccessType {
     RequestSeed = 1,
     SendKey = 2,

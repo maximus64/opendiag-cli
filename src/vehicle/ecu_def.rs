@@ -92,11 +92,17 @@ impl std::fmt::Display for Status {
 pub struct FlashDef {
     pub strategy: String,
     pub status: Status,
-    #[serde(default)]
-    pub verified_on: Vec<String>,
     pub start_address: Option<u32>,
     #[serde(default)]
     pub expect: Vec<DataMatch>,
+}
+/// Backup and restore of the ECU's stored data (for example an EEPROM). The
+/// strategy decides what is stored and how; identity comes from `match`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupDef {
+    pub strategy: String,
+    pub status: Status,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -138,6 +144,7 @@ pub struct EcuDef {
     #[serde(default, rename = "match")]
     pub matches: Vec<IdentityMatch>,
     pub flash: Option<FlashDef>,
+    pub backup: Option<BackupDef>,
     #[serde(default)]
     pub security: BTreeMap<String, String>,
     #[serde(default, rename = "signal")]

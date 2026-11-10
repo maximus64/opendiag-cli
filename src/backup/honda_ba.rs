@@ -22,6 +22,7 @@
 //! only sent for a granted seed; it is always computed, never guessed, and
 //! never retried: a wrong key locks the ECU until it is power-cycled.
 use super::{BackupStrategy, BlockLayout};
+use crate::utils::checksum8 as checksum;
 use crate::{
     events::{Answer, Cancel, Event, Interaction},
     obd::uds::{self, call_raw},
@@ -78,13 +79,6 @@ const RESTART_QUIET_GRACE: Duration = Duration::ZERO;
 /// The level 0x62 key for a level 0x61 seed: `seed × 33 / 4`, 16 bits.
 pub(crate) fn key(seed: u16) -> u16 {
     (u32::from(seed) * 33 / 4) as u16
-}
-/// The value that makes the bytes of a reply sum to zero.
-pub(crate) fn checksum(bytes: &[u8]) -> u8 {
-    bytes
-        .iter()
-        .fold(0u8, |sum, byte| sum.wrapping_add(*byte))
-        .wrapping_neg()
 }
 pub(crate) fn read_request(channel: u8, word: u8) -> [u8; 6] {
     [REQUEST_TAG, SERVICE_READ, 0, 0, channel, word]

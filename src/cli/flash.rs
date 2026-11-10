@@ -3,9 +3,18 @@ use super::{
     style, usage, Context, FlashArgs, Result,
 };
 use opendiag::{
+    events::FlashRecovery,
     flash::{self, FlashOptions, PreparedFlash, RunOptions, Selection},
     link::BusSpec,
     vehicle::SelectedVehicle,
+};
+use std::{
+    io,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError},
+    },
+    time::Duration,
 };
 pub(super) struct Input {
     prepared: PreparedFlash,
@@ -52,7 +61,9 @@ impl Staged {
         options.skip_battery_check = args.skip_battery_check;
         Ok(Self {
             bytes,
-            options: options.snapshot_tokens().map_err(usage)?,
+            options: options
+                .snapshot_tokens(flash::get_registry())
+                .map_err(usage)?,
         })
     }
     pub fn finish(
@@ -155,7 +166,7 @@ impl Staged {
     }
 }
 pub(super) fn run(context: &mut Context, args: &FlashArgs, input: Input) -> Result {
-    let mut ui = TerminalInteraction { yes: args.yes };
+    let mut ui = TerminalInteraction::new(args.yes);
     let preflight = if let Some(vehicle) = &mut context.vehicle {
         let slot = input.vehicle_slot(vehicle)?;
         flash::run_for_vehicle(
@@ -195,6 +206,68 @@ pub(super) fn run(context: &mut Context, args: &FlashArgs, input: Input) -> Resu
         println!("{}", style::ok("Firmware programming completed"));
     }
     Ok(())
+}
+
+/// Ctrl-C presses so far. `Cancel` stays set after a press deferred during
+/// programming, which cannot tell the recovery prompt about a new one.
+static INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
+
+pub(super) fn note_interrupt() {
+    INTERRUPTS.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Reads stdin on its own thread so Ctrl-C can end a prompt blocked on input.
+/// The channel disconnects when input closes. One reader serves every prompt,
+/// and it is only started once a flash needs recovery.
+pub(super) fn recovery_input() -> Receiver<String> {
+    let (lines, input) = mpsc::channel();
+    std::thread::spawn(move || loop {
+        let mut line = String::new();
+        match io::stdin().read_line(&mut line) {
+            Ok(0) => return,
+            Ok(_) => {
+                if lines.send(line).is_err() {
+                    return;
+                }
+            }
+            // Stray bytes on the terminal are not a decision to end recovery.
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {}
+            Err(_) => return,
+        }
+    });
+    input
+}
+
+pub(super) fn recovery_prompt(reason: &str, input: &Receiver<String>) -> FlashRecovery {
+    eprintln!("{}", style::warn(reason));
+    eprintln!("Enter status, recover (restart the retained image), or stop (end recovery).");
+    eprintln!("Ctrl-C or closing input also stops.");
+    let presses = INTERRUPTS.load(Ordering::SeqCst);
+    recovery_choice(input, || INTERRUPTS.load(Ordering::SeqCst) != presses)
+}
+
+/// No operator can answer once input closes, so holding the session would only
+/// keep pin 12 energized until the process is killed, which skips its release.
+fn recovery_choice(input: &Receiver<String>, interrupted: impl Fn() -> bool) -> FlashRecovery {
+    loop {
+        if interrupted() {
+            eprintln!("Interrupted; ending recovery.");
+            return FlashRecovery::Stop;
+        }
+        match input.recv_timeout(Duration::from_millis(100)) {
+            Ok(line) => match line.trim().to_ascii_lowercase().as_str() {
+                "status" => return FlashRecovery::Status,
+                "recover" => return FlashRecovery::Retry,
+                "stop" => return FlashRecovery::Stop,
+                _ => eprintln!("Enter status, recover, or stop."),
+            },
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                eprintln!("Input closed; ending recovery.");
+                return FlashRecovery::Stop;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -237,6 +310,50 @@ mod tests {
             panic!("expected flash command");
         };
         args
+    }
+
+    #[test]
+    fn recovery_choice_reads_operator_answers_after_invalid_input() {
+        let (lines, input) = mpsc::channel();
+        for line in ["nonsense\n", " STATUS \n", "recover\n", "stop\n"] {
+            lines.send(line.to_string()).unwrap();
+        }
+        assert_eq!(recovery_choice(&input, || false), FlashRecovery::Status);
+        assert_eq!(recovery_choice(&input, || false), FlashRecovery::Retry);
+        assert_eq!(recovery_choice(&input, || false), FlashRecovery::Stop);
+    }
+
+    #[test]
+    fn recovery_choice_stops_when_input_closes() {
+        let (lines, input) = mpsc::channel::<String>();
+        drop(lines);
+        assert_eq!(recovery_choice(&input, || false), FlashRecovery::Stop);
+    }
+
+    #[test]
+    fn recovery_choice_stops_on_interrupt_while_waiting_for_input() {
+        let (_lines, input) = mpsc::channel::<String>();
+        let polls = std::cell::Cell::new(0);
+        let interrupted = || {
+            polls.set(polls.get() + 1);
+            polls.get() > 1
+        };
+        assert_eq!(recovery_choice(&input, interrupted), FlashRecovery::Stop);
+        assert_eq!(polls.get(), 2);
+    }
+
+    #[test]
+    fn malformed_tokens_are_rejected_before_vehicle_selection() {
+        let image = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(image.path(), staged_rwd(0x11).bytes).unwrap();
+        let tokens = tempfile::NamedTempFile::new().unwrap();
+        let mut args = flash_args();
+        args.file = image.path().into();
+        args.tokens = Some(tokens.path().into());
+        for bytes in [b"unknown".as_slice(), b"1\r\n", b"Z\r\n"] {
+            std::fs::write(tokens.path(), bytes).unwrap();
+            assert!(Staged::load(&args, true).is_err());
+        }
     }
 
     #[test]

@@ -184,14 +184,22 @@ impl Adapter for Device {
                 self.inner.name, bus
             )));
         }
-        match bus.kind {
-            BusKind::IsoTp { .. } => Ok(Box::new(CanSession::open(self.clone(), bus.clone())?)),
+        if bus.framing == crate::link::Framing::Raw
+            && !matches!(bus.kind, BusKind::Iso9141 | BusKind::Iso14230 { .. })
+        {
+            return Err(DiagError::Unsupported(format!(
+                "Raw access is not implemented for {bus}"
+            )));
+        }
+        let link: Box<dyn DiagLink> = match bus.kind {
+            BusKind::IsoTp { .. } => Box::new(CanSession::open(self.clone(), bus.clone())?),
             BusKind::Iso9141 | BusKind::Iso14230 { .. } => {
-                Ok(Box::new(KLineSession::open(self.clone(), bus.clone())?))
+                Box::new(KLineSession::open(self.clone(), bus.clone())?)
             }
             BusKind::J1850Pwm | BusKind::J1850Vpw => {
-                Ok(Box::new(J1850Session::open(self.clone(), bus.clone())?))
+                Box::new(J1850Session::open(self.clone(), bus.clone())?)
             }
-        }
+        };
+        Ok(link)
     }
 }

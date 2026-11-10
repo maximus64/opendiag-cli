@@ -78,6 +78,7 @@ pub const PROTOCOL_ISO15765_LOGICAL: u32 = 0x200;
 
 pub const J1962_CONNECTOR: u32 = 0x01;
 pub const K_LINE_ONLY: u32 = 0x1000;
+pub const ISO9141_NO_CHECKSUM: u32 = 0x0200;
 
 // ---------------------------------------------------------------- tx flags
 

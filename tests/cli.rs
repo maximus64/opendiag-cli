@@ -42,6 +42,46 @@ fn usage_errors_exit_two_before_loading_the_adapter() {
 }
 
 #[test]
+fn rad_flash_rejects_invalid_input_before_opening_hardware() {
+    let directory = tempfile::tempdir().unwrap();
+    let raw = directory.path().join("application.bin");
+    let broken = directory.path().join("broken.rwd");
+    std::fs::write(&raw, [0xFF; 128]).unwrap();
+    std::fs::write(&broken, b"1\r\n").unwrap();
+    let raw = raw.to_str().unwrap();
+    let broken = broken.to_str().unwrap();
+    for args in [
+        vec!["--vehicle", "honda/accord-2005", "flash", raw],
+        vec![
+            "--vehicle",
+            "honda/accord-2005",
+            "flash",
+            raw,
+            "--start-address",
+            "0",
+            "--security-key",
+            "112233445566",
+        ],
+        vec![
+            "--vehicle",
+            "honda/accord-2005",
+            "flash",
+            raw,
+            "--start-address",
+            "0x8000",
+            "--security-key",
+            "1122",
+        ],
+        vec!["--vehicle", "honda/accord-2005", "flash", broken],
+    ] {
+        let output = run(&args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{stderr}");
+        assert!(!stderr.contains("Opening"), "{stderr}");
+    }
+}
+
+#[test]
 fn adapter_failures_exit_one_and_offer_setup_help() {
     for command in [
         ["adapter", "voltage"],

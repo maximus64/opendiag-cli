@@ -9,6 +9,7 @@ use crate::{
 };
 use std::path::{Path, PathBuf};
 pub mod honda_can;
+pub mod honda_kline;
 pub mod parsers;
 
 #[derive(Debug, Clone, Default)]
@@ -24,14 +25,24 @@ pub struct FlashOptions {
     pub(crate) token_data: Option<Vec<u8>>,
 }
 impl FlashOptions {
-    pub fn snapshot_tokens(mut self) -> Result<Self, DiagError> {
+    /// Read and validate external token bytes before any hardware is opened.
+    pub fn snapshot_tokens(mut self, registry: &StrategyRegistry) -> Result<Self, DiagError> {
         if let Some(path) = &self.tokens {
             if self.token_data.is_none() {
                 let data = std::fs::read(path)
                     .map_err(|e| DiagError::InvalidFile(format!("{}: {e}", path.display())))?;
-                parsers::HondaRwdParser::new()
-                    .parse(&data)
-                    .map_err(DiagError::InvalidFile)?;
+                let mut recognized = false;
+                for factory in &registry.factories {
+                    if factory.options().contains(&"tokens") && factory.inspect(&data)?.is_some() {
+                        recognized = true;
+                        break;
+                    }
+                }
+                if !recognized {
+                    return Err(DiagError::InvalidFile(
+                        "No flash strategy recognizes the token file".into(),
+                    ));
+                }
                 self.token_data = Some(data);
             }
         }
@@ -149,12 +160,25 @@ pub trait FlashStrategy {
     fn ecu_type(&self) -> &'static str;
     fn info(&mut self) -> Result<EcuInfo, DiagError>;
     fn preflight(&mut self, request: &PreparedFlash) -> Result<Preflight, DiagError>;
-    fn execute(&mut self, permit: FlashPermit, cancel: &Cancel) -> Result<(), DiagError>;
+    fn execute(
+        &mut self,
+        permit: FlashPermit,
+        interaction: &mut dyn Interaction,
+        cancel: &Cancel,
+    ) -> Result<(), DiagError>;
 }
 pub trait StrategyFactory: Send + Sync {
     fn name(&self) -> &'static str;
     fn inspect(&self, image: &[u8]) -> Result<Option<ImageInfo>, DiagError>;
     fn options(&self) -> &'static [&'static str];
+    /// Validate strategy-specific input and options without opening hardware.
+    /// Token bytes have already been retained in `options`.
+    fn validate_input(
+        &self,
+        image: &[u8],
+        options: &FlashOptions,
+        raw: bool,
+    ) -> Result<(), DiagError>;
     fn create_strategy<'a>(&self, protocol: &'a mut ObdProtocol) -> Box<dyn FlashStrategy + 'a>;
 }
 pub struct StrategyRegistry {
@@ -168,7 +192,10 @@ impl Default for StrategyRegistry {
 impl StrategyRegistry {
     pub fn new() -> Self {
         Self {
-            factories: vec![Box::new(honda_can::HondaCanBusStrategyFactory)],
+            factories: vec![
+                Box::new(honda_can::HondaCanBusStrategyFactory),
+                Box::new(honda_kline::HondaKLineStrategyFactory),
+            ],
         }
     }
     pub fn empty() -> Self {
@@ -296,27 +323,8 @@ impl StrategyRegistry {
             ));
         }
         options.start_address = Some(start);
-        if let Some(secret) = &options.security_key {
-            if strategy.eq_ignore_ascii_case("honda_can")
-                && (secret.len() != 4 && secret.len() != 6
-                    || secret.len() == 6 && secret[4..] == [0, 0])
-            {
-                return Err(DiagError::InvalidCommand(
-                    "Honda --security-key must contain 4 or 6 bytes, with a nonzero K3 modulus"
-                        .into(),
-                ));
-            }
-        }
-        options = options.snapshot_tokens()?;
-        if raw
-            && options.security_key.is_none()
-            && options.tokens.is_none()
-            && strategy.eq_ignore_ascii_case("honda_can")
-        {
-            return Err(DiagError::InvalidCommand(
-                "Raw Honda firmware needs --security-key or --tokens".into(),
-            ));
-        }
+        options = options.snapshot_tokens(self)?;
+        factory.validate_input(&bytes, &options, raw)?;
         Ok(PreparedFlash {
             image,
             target,
@@ -421,7 +429,7 @@ pub fn run(
         return Ok(preflight);
     }
     preflight.authorize(interaction, cancel)?;
-    strategy.execute(FlashPermit { _private: () }, cancel)?;
+    strategy.execute(FlashPermit { _private: () }, interaction, cancel)?;
     Ok(preflight)
 }
 /// Literal segments separated by '*' only; no regular expressions or code.
@@ -869,6 +877,9 @@ mod tests {
             }
             fn options(&self) -> &'static [&'static str] {
                 &[]
+            }
+            fn validate_input(&self, _: &[u8], _: &FlashOptions, _: bool) -> Result<(), DiagError> {
+                Ok(())
             }
             fn create_strategy<'a>(&self, _: &'a mut ObdProtocol) -> Box<dyn FlashStrategy + 'a> {
                 unreachable!()

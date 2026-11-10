@@ -5,6 +5,7 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 struct State {
     now: Instant,
     calls: Vec<String>,
+    configurations: Vec<Vec<(u32, u32)>>,
     failure: Option<&'static str>,
     keys: [u8; 2],
     fast_reply: Option<RxMsg>,
@@ -23,6 +24,7 @@ impl Fake {
         Self(Rc::new(RefCell::new(State {
             now: Instant::now(),
             calls: Vec::new(),
+            configurations: Vec::new(),
             failure: None,
             keys: [8, 8],
             fast_reply: None,
@@ -63,11 +65,16 @@ impl KLineIo for Fake {
         self.call(&format!("connect:{protocol:X}:{flags:X}"))?;
         Ok(1)
     }
-    fn configure(&self, _: u32, _: &[(u32, u32)]) -> Result<(), DiagError> {
+    fn configure(&self, _: u32, params: &[(u32, u32)]) -> Result<(), DiagError> {
+        self.0.borrow_mut().configurations.push(params.to_vec());
         self.call("config")
     }
-    fn filter(&self, _: u32, protocol: u32) -> Result<u32, DiagError> {
-        self.call(&format!("filter:{protocol:X}"))?;
+    fn filter(&self, _: u32, protocol: u32, framing: Framing) -> Result<u32, DiagError> {
+        if framing == Framing::Raw {
+            self.call("raw_filter")?;
+        } else {
+            self.call(&format!("filter:{protocol:X}"))?;
+        }
         Ok(2)
     }
     fn stop_filter(&self, _: u32, _: u32) -> Result<(), DiagError> {
@@ -162,6 +169,125 @@ fn rx(data: Vec<u8>) -> RxMsg {
         extra_data_index: data.len(),
         data,
     }
+}
+
+#[test]
+fn raw_mode_owns_one_channel_without_automatic_initialization_or_checksums() {
+    let io = Fake::new();
+    let mut spec = bus();
+    spec.framing = Framing::Raw;
+    let mut session = KLineSession::open(io.clone(), spec).unwrap();
+    assert_eq!(io.inits(), 0);
+    assert_eq!(io.0.borrow().calls[0], "connect:3:1200");
+    assert!(io.0.borrow().calls.contains(&"raw_filter".into()));
+    session
+        .set_timing(&std::collections::BTreeMap::from([
+            ("P3_MIN".into(), 4),
+            ("P4_MIN".into(), 0),
+        ]))
+        .unwrap();
+    assert_eq!(
+        io.0.borrow().configurations.last().unwrap(),
+        &[(P3_MIN, 4), (P4_MIN, 0)]
+    );
+    assert_eq!(DiagLink::initialize(&mut session).unwrap(), [8, 8]);
+    io.wait(Duration::from_secs(11));
+    let request = [0x7E, 5, 0x36, 2, 0x45];
+    session.send(&request).unwrap();
+    assert_eq!(io.0.borrow().sent, [request.to_vec()]);
+    assert_eq!(io.inits(), 1);
+    io.0.borrow_mut().rx.extend([
+        RxMsg {
+            rx_status: TX_MSG_TYPE,
+            ..rx(request.to_vec())
+        },
+        rx(vec![0x0E, 7]),
+        rx(vec![2, 0, 0x1D, 0x5C, 0x70]),
+    ]);
+    assert_eq!(
+        session.receive(Duration::from_secs(1)).unwrap().unwrap(),
+        ResponseFrame {
+            id: 0,
+            data: vec![0x0E, 7]
+        }
+    );
+    assert_eq!(
+        session
+            .receive(Duration::from_secs(1))
+            .unwrap()
+            .unwrap()
+            .data,
+        [2, 0, 0x1D, 0x5C, 0x70]
+    );
+    assert!(session
+        .request_functional(&[1, 0], Duration::from_secs(1))
+        .is_err());
+    drop(session);
+    assert!(io
+        .0
+        .borrow()
+        .calls
+        .ends_with(&["stop".into(), "disconnect".into()]));
+}
+
+#[test]
+fn raw_mode_rejects_bad_settings_and_does_not_resend_after_queue_errors() {
+    let io = Fake::new();
+    let mut spec = bus();
+    spec.framing = Framing::Raw;
+    let mut session = KLineSession::open(io.clone(), spec).unwrap();
+    assert!(session
+        .set_timing(&std::collections::BTreeMap::from([(
+            "P4_MIN".into(),
+            65536
+        )]))
+        .is_err());
+    assert!(session
+        .set_timing(&std::collections::BTreeMap::from([("UNKNOWN".into(), 1)]))
+        .is_err());
+    assert!(io.0.borrow().configurations.is_empty());
+    io.0.borrow_mut().full = 1;
+    assert!(session.send(&[1]).is_err());
+    assert!(io.0.borrow().sent.is_empty());
+    assert_eq!(
+        io.0.borrow()
+            .calls
+            .iter()
+            .filter(|call| call.as_str() == "queue:3")
+            .count(),
+        1
+    );
+    io.0.borrow_mut().rx.push_back(RxMsg {
+        rx_status: TX_FAILED,
+        ..rx(vec![0])
+    });
+    assert!(session.receive(Duration::from_secs(1)).is_err());
+    io.0.borrow_mut().rx.push_back(kwp_rx(vec![0]));
+    assert!(session.receive(Duration::from_secs(1)).is_err());
+}
+
+#[test]
+fn raw_filter_failure_closes_the_channel() {
+    let io = Fake::new();
+    io.0.borrow_mut().failure = Some("raw_filter");
+    let mut spec = bus();
+    spec.framing = Framing::Raw;
+    assert!(KLineSession::open(io.clone(), spec).is_err());
+    assert_eq!(io.0.borrow().calls.last().unwrap(), "disconnect");
+}
+
+#[test]
+fn raw_fast_initialization_is_rejected_without_sending_an_obd_start_request() {
+    let io = Fake::new();
+    let mut spec = BusSpec::from_cli("kwp-fast", None).unwrap();
+    spec.framing = Framing::Raw;
+    let mut session = KLineSession::open(io.clone(), spec).unwrap();
+    assert!(matches!(
+        DiagLink::initialize(&mut session),
+        Err(DiagError::Unsupported(_))
+    ));
+    assert!(io.0.borrow().fast_requests.is_empty());
+    assert!(io.0.borrow().sent.is_empty());
 }
 fn exchange(
     session: &mut KLineSession<Fake>,

@@ -54,7 +54,7 @@ pub(super) fn run(context: &mut Context, action: &DtcCommand) -> Result {
             }
         }
         DtcCommand::Clear { yes, target } => {
-            let mut ui = TerminalInteraction { yes: *yes };
+            let mut ui = TerminalInteraction::new(*yes);
             if let Some(selector) = target.ecu.as_deref() {
                 let ecu = context.target(Some(selector))?;
                 if ecu.diag == "obd" {

@@ -9,11 +9,34 @@ pub struct HondaRwdFirmwareInfo {
 }
 
 #[derive(Debug, Clone)]
-pub struct HondaRwdParseResult {
+pub struct HondaRwdX5a {
     pub can_address: u32,
     pub compatible_versions: HashMap<Vec<u8>, Vec<u8>>,
     pub firmware: HondaRwdFirmwareInfo,
     pub checksum: u32,
+}
+
+/// RWD format selected by the first byte of the container header.
+#[derive(Debug, Clone)]
+pub enum HondaRwdParseResult {
+    X31(HondaRwdX31),
+    X5a(HondaRwdX5a),
+}
+
+impl HondaRwdParseResult {
+    pub fn into_x31(self) -> Result<HondaRwdX31, String> {
+        match self {
+            Self::X31(rwd) => Ok(rwd),
+            _ => Err("Expected an x31 RWD container".into()),
+        }
+    }
+
+    pub fn into_x5a(self) -> Result<HondaRwdX5a, String> {
+        match self {
+            Self::X5a(rwd) => Ok(rwd),
+            _ => Err("Expected an x5A RWD container".into()),
+        }
+    }
 }
 
 pub struct HondaRwdParser;
@@ -33,10 +56,18 @@ impl HondaRwdParser {
     ///
     /// # Errors
     /// Returns an error if:
-    /// - The file doesn't have the expected indicator bytes (0x5a, 0x0d, 0x0a)
+    /// - The header magic is neither x31 nor x5A followed by CRLF
     /// - The file is truncated or malformed
     /// - Header structure is inconsistent
     pub fn parse(&self, data: &[u8]) -> Result<HondaRwdParseResult, String> {
+        match data.get(..3) {
+            Some([0x31, 0x0D, 0x0A]) => parse_x31(data).map(HondaRwdParseResult::X31),
+            Some([0x5A, 0x0D, 0x0A]) => self.parse_x5a(data).map(HondaRwdParseResult::X5a),
+            _ => Err("Unsupported RWD header magic".into()),
+        }
+    }
+
+    fn parse_x5a(&self, data: &[u8]) -> Result<HondaRwdX5a, String> {
         if data.len() < 3 {
             return Err("File too short".to_string());
         }
@@ -47,7 +78,6 @@ impl HondaRwdParser {
         let indicator_bytes = &data[0..3];
         idx += 3;
 
-        // Only CAN flashing RWD files are supported
         if indicator_bytes != [0x5a, 0x0d, 0x0a] {
             return Err("Not supported - invalid indicator bytes".to_string());
         }
@@ -166,7 +196,7 @@ impl HondaRwdParser {
             Vec::new()
         };
 
-        Ok(HondaRwdParseResult {
+        Ok(HondaRwdX5a {
             can_address,
             compatible_versions: versions,
             firmware: HondaRwdFirmwareInfo {
@@ -186,9 +216,160 @@ impl Default for HondaRwdParser {
     }
 }
 
+/// Payload bytes per record in the supported x31 layout.
+pub const X31_BLOCK_SIZE: usize = 128;
+
+/// A sparse x31 record with an absolute byte address and encrypted payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HondaRwdRecord {
+    pub address: u32,
+    pub encrypted: [u8; X31_BLOCK_SIZE],
+}
+
+/// Parsed x31 headers and records; the trailing additive checksum is validated.
+#[derive(Debug, Clone)]
+pub struct HondaRwdX31 {
+    pub target: u8,
+    pub compatible_versions: std::collections::BTreeMap<String, [u8; 6]>,
+    pub decryption_key: [u8; 3],
+    pub records: Vec<HondaRwdRecord>,
+}
+
+fn hex<const N: usize>(text: &str) -> Result<[u8; N], String> {
+    crate::utils::hex_to_bytes(text)?
+        .try_into()
+        .map_err(|_| format!("Expected {N} bytes in x31 header"))
+}
+
+/// Validate the x31 checksum, header pairing and sparse record addresses.
+fn parse_x31(data: &[u8]) -> Result<HondaRwdX31, String> {
+    if !data.starts_with(b"1\r\n") || data.len() < 7 {
+        return Err("Expected a Honda x31 RWD container".to_string());
+    }
+    let end = data.len() - 4;
+    let checksum = u32::from_le_bytes(data[end..].try_into().unwrap());
+    let actual = data[..end]
+        .iter()
+        .fold(0u32, |sum, &b| sum.wrapping_add(u32::from(b)));
+    if checksum != actual {
+        return Err("x31 RWD additive checksum mismatch".to_string());
+    }
+    let mut cursor = 3;
+    let mut headers = Vec::new();
+    for marker in b"#?/!&%" {
+        let delimiter = [*marker, b'\r', b'\n'];
+        if data.get(cursor..cursor + 3) != Some(delimiter.as_slice()) {
+            return Err(format!("Missing x31 {} header", char::from(*marker)));
+        }
+        cursor += 3;
+        let remaining = data
+            .get(cursor..end)
+            .ok_or_else(|| "Truncated x31 header".to_string())?;
+        let length = remaining
+            .windows(3)
+            .position(|part| part == delimiter)
+            .ok_or_else(|| "Unterminated x31 header".to_string())?;
+        let text = std::str::from_utf8(&remaining[..length])
+            .map_err(|_| "Non-ASCII x31 header".to_string())?;
+        if !text.is_ascii() {
+            return Err("Non-ASCII x31 header".to_string());
+        }
+        headers.push(text.lines().map(str::to_owned).collect::<Vec<_>>());
+        cursor += length + 3;
+    }
+    if headers[1].len() != 1 || headers[5] != ["80"] || headers[4].len() != 1 {
+        return Err("Expected one x31 target, 128-byte records and one cipher key".into());
+    }
+    let [target] = hex(&headers[1][0])?;
+    let decryption_key = hex(&headers[4][0])?;
+    if headers[2].is_empty() || headers[2].len() != headers[3].len() {
+        return Err("x31 calibration/security-material count mismatch".to_string());
+    }
+    let mut compatible = std::collections::BTreeMap::new();
+    for (calibration, secret) in headers[2].iter().zip(&headers[3]) {
+        if calibration.is_empty() || calibration.bytes().any(|b| !b.is_ascii_graphic()) {
+            return Err("Invalid x31 calibration identifier".to_string());
+        }
+        if compatible
+            .insert(calibration.clone(), hex(secret)?)
+            .is_some()
+        {
+            return Err("Duplicate x31 calibration entry".to_string());
+        }
+    }
+    let payload = data
+        .get(cursor..end)
+        .ok_or_else(|| "Truncated x31 records".to_string())?;
+    if payload.is_empty() || !payload.len().is_multiple_of(X31_BLOCK_SIZE + 2) {
+        return Err("Missing or incomplete x31 record".to_string());
+    }
+    let mut records = Vec::new();
+    let mut previous_end = 0;
+    for record in payload.as_chunks::<{ X31_BLOCK_SIZE + 2 }>().0 {
+        let address = u32::from(u16::from_be_bytes([record[0], record[1]])) << 4;
+        if address < previous_end || address + X31_BLOCK_SIZE as u32 > 0x100000 {
+            return Err("Overlapping or out-of-range x31 record".to_string());
+        }
+        records.push(HondaRwdRecord {
+            address,
+            encrypted: record[2..].try_into().unwrap(),
+        });
+        previous_end = address + X31_BLOCK_SIZE as u32;
+    }
+    Ok(HondaRwdX31 {
+        target,
+        compatible_versions: compatible,
+        decryption_key,
+        records,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dispatches_x31_by_magic_and_validates_every_truncated_prefix() {
+        let bytes = crate::test_support::x31_image();
+        let HondaRwdParseResult::X31(rwd) = HondaRwdParser::new().parse(&bytes).unwrap() else {
+            panic!("wrong format");
+        };
+        assert_eq!(rwd.target, 0x36);
+        assert_eq!(
+            rwd.records.iter().map(|r| r.address).collect::<Vec<_>>(),
+            [0x8000, 0xFFF80]
+        );
+        assert_eq!(
+            rwd.compatible_versions["37805-RAD-3350"],
+            [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]
+        );
+        for cut in 0..bytes.len() {
+            assert!(
+                HondaRwdParser::new().parse(&bytes[..cut]).is_err(),
+                "cut {cut}"
+            );
+        }
+        let mut corrupt = bytes;
+        corrupt[10] ^= 1;
+        assert!(HondaRwdParser::new()
+            .parse(&corrupt)
+            .unwrap_err()
+            .contains("checksum"));
+    }
+
+    #[test]
+    fn rejects_overlapping_x31_records_even_with_a_valid_checksum() {
+        let mut bytes = crate::test_support::x31_image();
+        let end = bytes.len() - 4;
+        let second = end - (X31_BLOCK_SIZE + 2);
+        bytes[second..second + 2].copy_from_slice(&[8, 0]);
+        let checksum: u32 = bytes[..end].iter().map(|&b| u32::from(b)).sum();
+        bytes[end..].copy_from_slice(&checksum.to_le_bytes());
+        assert!(HondaRwdParser::new()
+            .parse(&bytes)
+            .unwrap_err()
+            .contains("Overlapping"));
+    }
 
     /// Encodes one header: a count byte followed by length-prefixed entries.
     fn header(entries: &[&[u8]]) -> Vec<u8> {
@@ -227,7 +408,11 @@ mod tests {
 
     #[test]
     fn parses_every_field_of_a_well_formed_file() {
-        let parsed = HondaRwdParser::new().parse(&sample_rwd()).unwrap();
+        let parsed = HondaRwdParser::new()
+            .parse(&sample_rwd())
+            .unwrap()
+            .into_x5a()
+            .unwrap();
 
         // Header 2's first byte is OR'd into the diagnostic CAN address.
         assert_eq!(parsed.can_address, 0x18DA01F1);
@@ -242,7 +427,11 @@ mod tests {
     /// looked up against the calibration id read live from the ECU.
     #[test]
     fn pairs_calibration_versions_with_their_security_tokens() {
-        let parsed = HondaRwdParser::new().parse(&sample_rwd()).unwrap();
+        let parsed = HondaRwdParser::new()
+            .parse(&sample_rwd())
+            .unwrap()
+            .into_x5a()
+            .unwrap();
 
         assert_eq!(parsed.compatible_versions.len(), 2);
         assert_eq!(

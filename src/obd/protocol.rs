@@ -192,6 +192,16 @@ impl ObdProtocol {
         Ok(())
     }
 
+    /// Explicit bus initialization, for strategies using raw framing.
+    pub fn initialize_link(&mut self) -> Result<Vec<u8>, DiagError> {
+        self.link.initialize()
+    }
+
+    /// Change link timing without resetting its protocol state.
+    pub fn set_link_timing(&mut self, timing: &BTreeMap<String, u32>) -> Result<(), DiagError> {
+        self.link.set_timing(timing)
+    }
+
     /// Flushes anything queued on the bus.
     pub fn reset(&mut self) -> Result<(), DiagError> {
         self.link.reset()

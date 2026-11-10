@@ -128,7 +128,7 @@ pub(super) fn run(context: &mut Context, action: &ServiceCommand) -> Result {
             vehicle.run_service(
                 name,
                 &mut context.protocol,
-                &mut TerminalInteraction { yes: *yes },
+                &mut TerminalInteraction::new(*yes),
                 &context.cancel,
                 *allow_untested,
             )?;

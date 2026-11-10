@@ -659,7 +659,10 @@ pub fn run(mut cli: Cli) -> Result {
     let cancel = Cancel::default();
     if !cfg!(test) {
         let signal = cancel.clone();
-        ctrlc::set_handler(move || signal.cancel())?;
+        ctrlc::set_handler(move || {
+            signal.cancel();
+            flash::note_interrupt();
+        })?;
     }
     let (loaded, _) = config::load_config(&cli)?;
     let registry = opendiag::j2534::discovery::registry_entries();

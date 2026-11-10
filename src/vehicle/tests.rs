@@ -168,7 +168,33 @@ fn accord_family_does_not_match_another_calibration_or_multiple_records() {
             .resolve_ecu("engine", &mut protocol, &Cancel::default())
             .unwrap();
         assert!(!ecu.selection.matched);
-        assert!(ecu.definition.flash.is_none());
+        assert_eq!(
+            ecu.definition.flash.as_ref().unwrap().strategy,
+            "honda_kline"
+        );
+        link.script_functional(accord_replies("0904"));
+        let request = crate::flash::get_registry()
+            .prepare(
+                crate::test_support::x31_image(),
+                crate::flash::FlashOptions::default(),
+                crate::flash::Selection::default(),
+            )
+            .unwrap();
+        let error = crate::flash::run_for_vehicle(
+            &mut protocol,
+            &mut vehicle,
+            "engine",
+            &request,
+            &crate::flash::VehicleRunOptions {
+                allow_untested: true,
+                ..Default::default()
+            },
+            &mut ScriptedInteraction::new(true),
+            &Cancel::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, DiagError::PreflightFailed(_)));
+        assert!(error.to_string().contains("No ECU variant matched"));
         assert!(link.sent().is_empty());
     }
 }

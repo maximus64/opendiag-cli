@@ -58,7 +58,7 @@ fn backup_ecu(
         vehicle,
         &slot,
         allow_untested,
-        &mut TerminalInteraction { yes: false },
+        &mut TerminalInteraction::new(false),
         &context.cancel,
     )?;
     backup.save_new(output)?;
@@ -111,7 +111,7 @@ fn restore_ecu(context: &mut Context, selector: &str, args: RestoreArgs<'_>) -> 
         &backup,
         safety_copy_dir,
         &args.options,
-        &mut TerminalInteraction { yes: args.yes },
+        &mut TerminalInteraction::new(args.yes),
         &context.cancel,
     )?;
     if args.options.dry_run {

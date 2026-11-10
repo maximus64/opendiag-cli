@@ -18,7 +18,7 @@ pub fn parse_calibration_ids(data: &[u8]) -> Value {
         let Ok(text) = std::str::from_utf8(record) else {
             return Value::Unavailable;
         };
-        let text = text.trim_end_matches(['\0', ' ']);
+        let text = crate::utils::trim_padding(text);
         if text.is_empty()
             || !text
                 .bytes()

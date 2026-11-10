@@ -1,4 +1,4 @@
-use super::parsers::honda_rwd::HondaRwdParseResult;
+use super::parsers::honda_rwd::HondaRwdX5a;
 use super::parsers::HondaRwdParser;
 use super::{FlashOptions, FlashPermit, FlashStrategy, ImageInfo, PreparedFlash, StrategyFactory};
 use crate::errors::DiagError;
@@ -165,7 +165,7 @@ impl<'a> HondaCanBusStrategy<'a> {
             self.protocol,
             uds::DataIdentifier::ApplicationSoftwareIdentification as u16,
         )?;
-        Ok(String::from_utf8_lossy(&raw).trim_matches('\0').to_string())
+        Ok(crate::diag::text(&raw))
     }
 
     /// Resolves the SecurityAccess secret, in priority order:
@@ -178,7 +178,7 @@ impl<'a> HondaCanBusStrategy<'a> {
         &mut self,
         calibration_id: &str,
         opts: &FlashOptions,
-        embedded: Option<&HondaRwdParseResult>,
+        embedded: Option<&HondaRwdX5a>,
     ) -> Result<Vec<u8>, DiagError> {
         if let Some(key) = &opts.security_key {
             if key.len() != 4 && key.len() != 6 {
@@ -194,9 +194,12 @@ impl<'a> HondaCanBusStrategy<'a> {
         }
 
         if let Some(data) = &opts.token_data {
-            let rwd = HondaRwdParser::new().parse(data).map_err(|e| {
-                DiagError::InvalidResponse(format!("Failed to parse --tokens file: {e}"))
-            })?;
+            let rwd = HondaRwdParser::new()
+                .parse(data)
+                .and_then(|rwd| rwd.into_x5a())
+                .map_err(|e| {
+                    DiagError::InvalidResponse(format!("Failed to parse --tokens file: {e}"))
+                })?;
             if let Some(token) = Self::lookup_token(&rwd, calibration_id) {
                 self.protocol.emit(Event::Detail(&format!(
                     "[HONDA_CAN] Using security token from --tokens for version: {calibration_id}"
@@ -222,14 +225,14 @@ impl<'a> HondaCanBusStrategy<'a> {
     }
 
     /// Looks up the security token for a calibration id in a parsed `.rwd` table.
-    fn lookup_token(rwd: &HondaRwdParseResult, calibration_id: &str) -> Option<Vec<u8>> {
+    fn lookup_token(rwd: &HondaRwdX5a, calibration_id: &str) -> Option<Vec<u8>> {
         rwd.compatible_versions
             .get(calibration_id.as_bytes())
             .cloned()
     }
 
     /// Builds a descriptive error listing the versions a token table does cover.
-    fn no_token_error(rwd: &HondaRwdParseResult, calibration_id: &str) -> DiagError {
+    fn no_token_error(rwd: &HondaRwdX5a, calibration_id: &str) -> DiagError {
         let mut msg =
             format!("No security token for ECU version '{calibration_id}'. Available versions:");
         for version_key in rwd.compatible_versions.keys() {
@@ -493,6 +496,7 @@ impl<'a> FlashStrategy for HondaCanBusStrategy<'a> {
             Some(
                 HondaRwdParser::new()
                     .parse(&request.bytes)
+                    .and_then(|rwd| rwd.into_x5a())
                     .map_err(DiagError::InvalidFile)?,
             )
         };
@@ -554,7 +558,12 @@ impl<'a> FlashStrategy for HondaCanBusStrategy<'a> {
         Ok(preflight)
     }
 
-    fn execute(&mut self, _permit: FlashPermit, cancel: &Cancel) -> Result<(), DiagError> {
+    fn execute(
+        &mut self,
+        _permit: FlashPermit,
+        _interaction: &mut dyn crate::events::Interaction,
+        cancel: &Cancel,
+    ) -> Result<(), DiagError> {
         let job = self.job.take().ok_or_else(|| {
             DiagError::InvalidCommand("Flash preflight has not prepared a firmware job".into())
         })?;
@@ -600,6 +609,29 @@ impl HondaCanBusStrategy<'_> {
 pub struct HondaCanBusStrategyFactory;
 
 impl StrategyFactory for HondaCanBusStrategyFactory {
+    fn validate_input(&self, _: &[u8], options: &FlashOptions, raw: bool) -> Result<(), DiagError> {
+        if let Some(secret) = &options.security_key {
+            if secret.len() != 4 && secret.len() != 6 || secret.len() == 6 && secret[4..] == [0, 0]
+            {
+                return Err(DiagError::InvalidCommand(
+                    "Honda --security-key must contain 4 or 6 bytes, with a nonzero K3 modulus"
+                        .into(),
+                ));
+            }
+        }
+        if let Some(tokens) = &options.token_data {
+            HondaRwdParser::new()
+                .parse(tokens)
+                .and_then(|rwd| rwd.into_x5a())
+                .map_err(DiagError::InvalidFile)?;
+        }
+        if raw && options.security_key.is_none() && options.token_data.is_none() {
+            return Err(DiagError::InvalidCommand(
+                "Raw Honda firmware needs --security-key or --tokens".into(),
+            ));
+        }
+        Ok(())
+    }
     fn name(&self) -> &'static str {
         "honda_can"
     }
@@ -612,6 +644,7 @@ impl StrategyFactory for HondaCanBusStrategyFactory {
         }
         let rwd = HondaRwdParser::new()
             .parse(bytes)
+            .and_then(|rwd| rwd.into_x5a())
             .map_err(DiagError::InvalidFile)?;
         let mut compatible: Vec<_> = rwd
             .compatible_versions

@@ -36,11 +36,23 @@ pub enum Answer {
     Continue,
     Abort,
 }
+/// Operator choice while an interrupted flash still owns the adapter and voltage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashRecovery {
+    Status,
+    Retry,
+    Stop,
+}
 pub trait Interaction {
     /// Present a preflight, including failed checks, without authorizing anything.
     fn report(&mut self, _: &Preflight) {}
     fn confirm(&mut self, preflight: &Preflight) -> bool;
     fn prompt(&mut self, text: &str) -> Answer;
+    /// Keep the current session alive while choosing recovery. Returning `Stop`
+    /// releases programming voltage; `Retry` restarts only the retained image.
+    fn flash_recovery(&mut self, _reason: &str) -> FlashRecovery {
+        FlashRecovery::Stop
+    }
 }
 
 /// Thread-safe request; the session decides at which boundaries it is safe to stop.

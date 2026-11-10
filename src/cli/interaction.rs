@@ -1,13 +1,14 @@
 use super::progress::ProgressDisplay;
 use super::style;
 use opendiag::{
-    events::{Answer, Event, Events, Interaction},
+    events::{Answer, Event, Events, FlashRecovery, Interaction},
     preflight::Preflight,
 };
 use std::{
     cell::RefCell,
     io::{self, IsTerminal, Write},
     rc::Rc,
+    sync::mpsc::Receiver,
     time::Instant,
 };
 
@@ -51,7 +52,16 @@ impl Events for TerminalEvents {
     }
 }
 pub struct TerminalInteraction {
-    pub yes: bool,
+    yes: bool,
+    recovery_input: Option<Receiver<String>>,
+}
+impl TerminalInteraction {
+    pub fn new(yes: bool) -> Self {
+        Self {
+            yes,
+            recovery_input: None,
+        }
+    }
 }
 /// Each check is marked rather than tagged with its status name, so the column
 /// of values stays aligned whatever the outcome.
@@ -92,6 +102,12 @@ fn confirmation() -> String {
     format!("{} {} ", style::heading("Continue?"), style::muted("[y/N]"))
 }
 impl Interaction for TerminalInteraction {
+    fn flash_recovery(&mut self, reason: &str) -> FlashRecovery {
+        let input = self
+            .recovery_input
+            .get_or_insert_with(super::flash::recovery_input);
+        super::flash::recovery_prompt(reason, input)
+    }
     fn report(&mut self, preflight: &Preflight) {
         show_preflight(preflight);
     }

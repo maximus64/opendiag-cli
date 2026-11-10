@@ -16,7 +16,9 @@ use crate::obd::addressing::{Addressing, EcuAddress};
 ///
 /// `id` is the header it arrived on — a CAN ID, or (on K-Line/J1850) a
 /// 3-byte header in the low 24 bits. `data` is the payload with framing,
-/// padding and checksums already removed.
+/// padding and checksums already removed. In raw serial mode, `id` is zero
+/// and `data` contains the received wire bytes, including headers and checksums.
+/// A raw serial message may be a fragment; the protocol assembles complete replies.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ResponseFrame {
     pub id: u32,
@@ -58,6 +60,25 @@ pub enum BusKind {
     J1850Pwm,
 }
 
+/// Whether the backend frames diagnostic payloads or passes physical bytes through.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum Framing {
+    #[default]
+    Diagnostic,
+    Raw,
+}
+
 /// Everything needed to open a vehicle bus.
 ///
 /// Built by the CLI, auto-detection or a vehicle profile — never hard-coded in a
@@ -65,6 +86,8 @@ pub enum BusKind {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct BusSpec {
     pub kind: BusKind,
+    #[serde(default)]
+    pub framing: Framing,
     pub bitrate: u32,
     /// J1962 connector pins.
     pub pins: Vec<u32>,
@@ -78,6 +101,7 @@ impl BusSpec {
     pub fn obd_can(id: IdWidth, bitrate: u32) -> Self {
         BusSpec {
             kind: BusKind::IsoTp { id },
+            framing: Framing::Diagnostic,
             bitrate,
             pins: vec![6, 14],
             init_address: None,
@@ -95,6 +119,7 @@ impl BusSpec {
         };
         BusSpec {
             kind,
+            framing: Framing::Diagnostic,
             bitrate,
             pins,
             init_address: if matches!(kind, BusKind::Iso9141 | BusKind::Iso14230 { .. }) {
@@ -219,9 +244,26 @@ pub trait Adapter: DeviceOps {
     fn connect(&self, bus: &BusSpec) -> Result<Box<dyn DiagLink>, DiagError>;
 }
 
-/// Traffic on one open bus, in whole messages.
+/// Traffic on one open bus, with framing selected by its `BusSpec`.
 pub trait DiagLink {
     fn bus(&self) -> &BusSpec;
+    /// Explicitly perform the initialization selected by the bus specification.
+    /// Returns its keyword bytes. Raw connections never initialize automatically.
+    fn initialize(&mut self) -> Result<Vec<u8>, DiagError> {
+        Err(DiagError::Unsupported(
+            "Explicit initialization is not supported on this link".into(),
+        ))
+    }
+    /// Update timing without reconnecting or reinitializing the bus. Uses the
+    /// same names and units as `BusSpec::timing`; unsupported values are rejected.
+    fn set_timing(
+        &mut self,
+        _timing: &std::collections::BTreeMap<String, u32>,
+    ) -> Result<(), DiagError> {
+        Err(DiagError::Unsupported(
+            "Timing updates are not supported on this link".into(),
+        ))
+    }
     /// Largest request payload one message can carry.
     fn max_payload(&self) -> usize;
     /// The physical request header for subsequent [`DiagLink::send`]s (what
@@ -241,7 +283,7 @@ pub trait DiagLink {
             EcuAddress::Byte(address) => self.set_target(address as u32),
         }
     }
-    /// Sends one complete request to the current target.
+    /// Sends one request to the current target, or exact wire bytes in raw mode.
     fn send(&mut self, payload: &[u8]) -> Result<(), DiagError>;
     /// Sends a single-frame functional request while retaining the current
     /// target's reply filter and physical flow-control address. Replies,
@@ -254,7 +296,7 @@ pub trait DiagLink {
     /// The next complete message from the current target, or `None` if
     /// nothing arrived within `timeout`. Separate from `send` because one
     /// request can bring several replies ("response pending", or multi-message
-    /// answers on K-Line).
+    /// answers on K-Line). Raw serial links return received byte fragments.
     fn receive(&mut self, timeout: Duration) -> Result<Option<ResponseFrame>, DiagError>;
     /// A functional (broadcast) request; every reply within `window`.
     fn request_functional(

@@ -1,3 +1,32 @@
+/// Byte that makes an eight-bit wrapping sum equal zero.
+pub(crate) fn checksum8(bytes: &[u8]) -> u8 {
+    bytes
+        .iter()
+        .fold(0u8, |sum, byte| sum.wrapping_add(*byte))
+        .wrapping_neg()
+}
+
+/// Removes the NUL and space padding ECUs put around fixed-width text fields.
+pub fn trim_padding(text: &str) -> &str {
+    text.trim_matches(['\0', ' '])
+}
+
+/// Formats whole seconds with explicit units for duration estimates.
+pub(crate) fn format_duration(seconds: u64) -> String {
+    if seconds >= 3600 {
+        format!(
+            "{} h {} min {} s",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    } else if seconds >= 60 {
+        format!("{} min {} s", seconds / 60, seconds % 60)
+    } else {
+        format!("{seconds} s")
+    }
+}
+
 pub fn hex_to_bytes(hex_str: &str) -> Result<Vec<u8>, &'static str> {
     if !hex_str.is_ascii() {
         return Err("Invalid hex character found.");
@@ -38,6 +67,15 @@ pub fn bytes_to_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trim_padding_removes_nul_and_space_from_both_ends_only() {
+        assert_eq!(trim_padding("37805-RAD-3350"), "37805-RAD-3350");
+        assert_eq!(trim_padding("37805-RAD-3350  "), "37805-RAD-3350");
+        assert_eq!(trim_padding("37805-RAD-3350\0\0"), "37805-RAD-3350");
+        assert_eq!(trim_padding("\0 37805 RAD \0 "), "37805 RAD");
+        assert_eq!(trim_padding(" \0 "), "");
+    }
 
     #[test]
     fn hex_round_trips_through_bytes() {

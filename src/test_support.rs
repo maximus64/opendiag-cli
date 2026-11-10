@@ -32,6 +32,28 @@ pub fn accord_messages(request: &str) -> Vec<Vec<u8>> {
     )
 }
 
+/// Synthetic x31 container; contains no production firmware or security material.
+pub fn x31_image() -> Vec<u8> {
+    let mut bytes = b"1\r\n".to_vec();
+    for (marker, text) in [
+        ('#', "TEST"),
+        ('?', "36"),
+        ('/', "37805-RAD-3350"),
+        ('!', "112233445566"),
+        ('&', "123456"),
+        ('%', "80"),
+    ] {
+        bytes.extend_from_slice(format!("{marker}\r\n{text}\r\n{marker}\r\n").as_bytes());
+    }
+    for address in [0x8000u32, 0xFFF80] {
+        bytes.extend_from_slice(&((address >> 4) as u16).to_be_bytes());
+        bytes.extend_from_slice(&[0xA5; 128]);
+    }
+    let checksum: u32 = bytes.iter().map(|&b| u32::from(b)).sum();
+    bytes.extend_from_slice(&checksum.to_le_bytes());
+    bytes
+}
+
 pub fn ford_messages(request: &str) -> Vec<Vec<u8>> {
     captured_messages(
         include_str!("../tests/fixtures/ford-1997-pwm.toml"),
@@ -123,6 +145,7 @@ pub struct ScriptedInteraction {
     pub confirmed: usize,
     pub proceed: bool,
     pub answers: VecDeque<crate::events::Answer>,
+    pub recovery: VecDeque<crate::events::FlashRecovery>,
 }
 impl ScriptedInteraction {
     pub fn new(proceed: bool) -> Self {
@@ -130,10 +153,16 @@ impl ScriptedInteraction {
             confirmed: 0,
             proceed,
             answers: VecDeque::new(),
+            recovery: VecDeque::new(),
         }
     }
 }
 impl crate::events::Interaction for ScriptedInteraction {
+    fn flash_recovery(&mut self, _: &str) -> crate::events::FlashRecovery {
+        self.recovery
+            .pop_front()
+            .unwrap_or(crate::events::FlashRecovery::Stop)
+    }
     fn confirm(&mut self, _: &crate::preflight::Preflight) -> bool {
         self.confirmed += 1;
         self.proceed
@@ -153,6 +182,7 @@ pub const MOCK_RESPONSE_ID: u32 = 0x18DAF101;
 #[derive(Default)]
 struct MockLinkState {
     sent: Vec<Vec<u8>>,
+    sent_timings: Vec<BTreeMap<String, u32>>,
     targets: Vec<u32>,
     pairs: Vec<(u32, u32)>,
     replies: VecDeque<ResponseFrame>,
@@ -208,6 +238,11 @@ impl MockLink {
             .iter()
             .map(|p| bytes_to_hex(p))
             .collect()
+    }
+
+    /// Timing settings in effect for each sent payload.
+    pub fn sent_timings(&self) -> Vec<BTreeMap<String, u32>> {
+        self.state.borrow().sent_timings.clone()
     }
 
     /// Every `set_target`, in order.
@@ -275,11 +310,18 @@ impl DiagLink for MockLink {
     }
 
     fn max_payload(&self) -> usize {
-        if self.bus.is_can() {
+        if self.bus.is_can() || self.bus.framing == crate::link::Framing::Raw {
             4095
         } else {
             7
         }
+    }
+    fn initialize(&mut self) -> Result<Vec<u8>, DiagError> {
+        Ok(vec![8, 8])
+    }
+    fn set_timing(&mut self, timing: &BTreeMap<String, u32>) -> Result<(), DiagError> {
+        self.bus.timing.extend(timing.clone());
+        Ok(())
     }
 
     fn set_target(&mut self, request_header: u32) -> Result<(), DiagError> {
@@ -292,7 +334,9 @@ impl DiagLink for MockLink {
     }
 
     fn send(&mut self, payload: &[u8]) -> Result<(), DiagError> {
-        self.state.borrow_mut().sent.push(payload.to_vec());
+        let mut state = self.state.borrow_mut();
+        state.sent.push(payload.to_vec());
+        state.sent_timings.push(self.bus.timing.clone());
         Ok(())
     }
 
@@ -330,9 +374,11 @@ impl DiagLink for MockLink {
 #[derive(Default)]
 struct FakeAdapterState {
     voltage_calls: Vec<(u32, u32)>,
+    battery_reads: usize,
     refused_pins: Vec<(u32, i32)>,
     connects: Vec<BusSpec>,
     links: VecDeque<MockLink>,
+    measured_programming_voltage: u32,
 }
 
 /// An adapter that records programming-voltage calls and hands out links.
@@ -345,6 +391,9 @@ impl FakeAdapter {
     pub fn new() -> Self {
         Self::default()
     }
+    pub fn programming_voltage_readback(&self, millivolts: u32) {
+        self.state.borrow_mut().measured_programming_voltage = millivolts;
+    }
 
     /// Makes `set_programming_voltage` on `pin` fail with J2534 `code`.
     pub fn refuse_pin(&self, pin: u32, code: i32) {
@@ -354,6 +403,10 @@ impl FakeAdapter {
     /// Every programming-voltage call as (pin, value), including refused ones.
     pub fn voltage_calls(&self) -> Vec<(u32, u32)> {
         self.state.borrow().voltage_calls.clone()
+    }
+
+    pub fn battery_reads(&self) -> usize {
+        self.state.borrow().battery_reads
     }
 
     /// The next link `connect` returns.
@@ -381,11 +434,12 @@ impl DeviceOps for FakeAdapter {
     }
 
     fn read_battery_mv(&self) -> Result<u32, DiagError> {
+        self.state.borrow_mut().battery_reads += 1;
         Ok(12_400)
     }
 
     fn read_programming_voltage_mv(&self) -> Result<u32, DiagError> {
-        Ok(0)
+        Ok(self.state.borrow().measured_programming_voltage)
     }
 }
 

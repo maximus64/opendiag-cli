@@ -472,9 +472,9 @@ pub fn get_vechicle_info_pids() -> HashMap<u8, PidDefinition> {
                 // VIN is ASCII characters in the response data
                 let vin_bytes = data.get(1..).unwrap_or_default(); // Skip the first byte (mode)
                 match std::str::from_utf8(vin_bytes) {
-                    Ok(vin_str) => crate::value::Value::Text(
-                        vin_str.trim_end_matches(char::from(0)).to_string(),
-                    ), // Remove trailing nulls
+                    Ok(vin_str) => {
+                        crate::value::Value::Text(crate::utils::trim_padding(vin_str).to_string())
+                    }
                     Err(_) => crate::value::Value::Text("Invalid UTF-8 in VIN".to_string()),
                 }
             },

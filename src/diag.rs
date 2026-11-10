@@ -159,7 +159,7 @@ fn common(id: DataId) -> Result<u16, DiagError> {
     }
 }
 pub fn text(data: &[u8]) -> String {
-    String::from_utf8_lossy(data).trim_matches('\0').to_string()
+    crate::utils::trim_padding(&String::from_utf8_lossy(data)).to_string()
 }
 /// The text of a VIN DID (0xF190). Some ECUs send a length byte before the VIN
 /// and pad after it; a plain VIN starts with a character well above any such

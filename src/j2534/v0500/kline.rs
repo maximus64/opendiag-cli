@@ -1,5 +1,5 @@
-//! ISO 9141-2 and ISO 14230-4 OBD on a J2534 physical channel. The adapter owns byte timing,
-//! initialization waveforms and checksums; this layer owns diagnostic exchanges.
+//! ISO 9141-2 and ISO 14230-4 on one J2534 physical channel. Diagnostic framing
+//! provides OBD exchanges; raw framing preserves bytes and uses explicit initialization.
 
 use std::time::{Duration, Instant};
 
@@ -7,7 +7,7 @@ use super::{device::Device, ffi::RxMsg};
 use crate::{
     events::Event,
     j2534::consts::*,
-    link::{BusKind, BusSpec, DiagLink, KwpInit, ResponseFrame},
+    link::{BusKind, BusSpec, DiagLink, Framing, KwpInit, ResponseFrame},
     obd::addressing::Addressing,
     DiagError,
 };
@@ -22,7 +22,7 @@ const QUEUE_WAIT: Duration = Duration::from_secs(2);
 pub(crate) trait KLineIo {
     fn connect(&self, bus: &BusSpec, protocol: u32, flags: u32) -> Result<u32, DiagError>;
     fn configure(&self, channel: u32, params: &[(u32, u32)]) -> Result<(), DiagError>;
-    fn filter(&self, channel: u32, protocol: u32) -> Result<u32, DiagError>;
+    fn filter(&self, channel: u32, protocol: u32, framing: Framing) -> Result<u32, DiagError>;
     fn stop_filter(&self, channel: u32, filter: u32) -> Result<(), DiagError>;
     fn initialize(&self, channel: u32, address: u8) -> Result<[u8; 2], DiagError>;
     fn fast_initialize(&self, channel: u32, request: &[u8]) -> Result<RxMsg, DiagError>;
@@ -48,15 +48,17 @@ impl KLineIo for Device {
     fn configure(&self, channel: u32, params: &[(u32, u32)]) -> Result<(), DiagError> {
         self.inner.lib.set_config(channel, params)
     }
-    fn filter(&self, channel: u32, protocol: u32) -> Result<u32, DiagError> {
-        let (mask, pattern) = if protocol == PROTOCOL_ISO14230 {
-            ([0xC0, 0xFF, 0], [0x80, 0xF1, 0])
+    fn filter(&self, channel: u32, protocol: u32, framing: Framing) -> Result<u32, DiagError> {
+        let (mask, pattern): (&[u8], &[u8]) = if framing == Framing::Raw {
+            (&[0], &[0])
+        } else if protocol == PROTOCOL_ISO14230 {
+            (&[0xC0, 0xFF, 0], &[0x80, 0xF1, 0])
         } else {
-            ([0xFF, 0xFF, 0], [0x48, 0x6B, 0])
+            (&[0xFF, 0xFF, 0], &[0x48, 0x6B, 0])
         };
         self.inner
             .lib
-            .start_pass_filter(channel, protocol, 0, &mask, &pattern)
+            .start_pass_filter(channel, protocol, 0, mask, pattern)
     }
     fn stop_filter(&self, channel: u32, filter: u32) -> Result<(), DiagError> {
         self.inner.lib.stop_filter(channel, filter)
@@ -140,7 +142,7 @@ impl<I: KLineIo> KLineSession<I> {
                 "K-Line requires a nonzero bitrate".into(),
             ));
         }
-        let flags = match bus.pins.as_slice() {
+        let mut flags = match bus.pins.as_slice() {
             [7] => K_LINE_ONLY,
             [7, 15] => 0,
             _ => {
@@ -149,6 +151,9 @@ impl<I: KLineIo> KLineSession<I> {
                 ))
             }
         };
+        if bus.framing == Framing::Raw {
+            flags |= ISO9141_NO_CHECKSUM;
+        }
         let params = timing(&bus)?;
         let quiet_half_ms = u64::from(bus.timing.get("P1_MAX").copied().unwrap_or(40))
             + u64::from(bus.timing.get("P2_MAX").copied().unwrap_or(100));
@@ -168,12 +173,14 @@ impl<I: KLineIo> KLineSession<I> {
         if !params.is_empty() {
             session.io.configure(channel, &params)?;
         }
-        session.filter = Some(session.io.filter(channel, protocol)?);
-        session.initialize()?;
+        session.filter = Some(session.io.filter(channel, protocol, session.bus.framing)?);
+        if session.bus.framing == Framing::Diagnostic {
+            session.initialize_obd()?;
+        }
         Ok(session)
     }
 
-    fn initialize(&mut self) -> Result<(), DiagError> {
+    fn initialize_obd(&mut self) -> Result<[u8; 2], DiagError> {
         self.initialized = false;
         if let Some(last) = self.last_activity {
             // Let an interrupted/expired exchange leave communication mode before waking it.
@@ -213,7 +220,7 @@ impl<I: KLineIo> KLineSession<I> {
             self.io.configure(self.channel, &params)?;
         }
         self.initialized = true;
-        Ok(())
+        Ok(keys)
     }
 
     fn initialize_fast(&mut self, address: u8) -> Result<[u8; 2], DiagError> {
@@ -248,7 +255,7 @@ impl<I: KLineIo> KLineSession<I> {
                 .last_activity
                 .is_none_or(|last| self.io.now().duration_since(last) >= REINITIALIZE_AFTER)
         {
-            self.initialize()?;
+            self.initialize_obd()?;
         }
         if let Some(last) = self.last_activity {
             self.io
@@ -406,18 +413,96 @@ impl<I: KLineIo> DiagLink for KLineSession<I> {
         &self.bus
     }
     fn max_payload(&self) -> usize {
-        MAX_PAYLOAD
+        if self.bus.framing == Framing::Raw {
+            MAX_MESSAGE_BYTES
+        } else {
+            MAX_PAYLOAD
+        }
+    }
+    fn initialize(&mut self) -> Result<Vec<u8>, DiagError> {
+        if self.bus.framing == Framing::Diagnostic {
+            return self.initialize_obd().map(|keys| keys.to_vec());
+        }
+        self.io.clear(self.channel, CLEAR_RX_QUEUE)?;
+        let address = self.bus.init_address.unwrap_or(0x33);
+        match self.bus.kind {
+            BusKind::Iso14230 {
+                init: KwpInit::Fast,
+            } => Err(DiagError::Unsupported(
+                "Fast initialization with raw framing is not implemented".into(),
+            )),
+            _ => self
+                .io
+                .initialize(self.channel, address)
+                .map(|keys| keys.to_vec()),
+        }
+    }
+    fn set_timing(
+        &mut self,
+        values: &std::collections::BTreeMap<String, u32>,
+    ) -> Result<(), DiagError> {
+        let mut updated = self.bus.clone();
+        updated.timing = values.clone();
+        let params = timing(&updated)?;
+        self.io.configure(self.channel, &params)?;
+        self.bus.timing.extend(values.clone());
+        let half_ms = u64::from(self.bus.timing.get("P1_MAX").copied().unwrap_or(40))
+            + u64::from(self.bus.timing.get("P2_MAX").copied().unwrap_or(100));
+        self.reply_quiet = REPLY_QUIET.max(Duration::from_micros(half_ms * 500));
+        Ok(())
     }
     fn set_target(&mut self, address: u32) -> Result<(), DiagError> {
         self.bus.addressing().parse_ecu(address).map(|_| ())
     }
-    fn send(&mut self, _: &[u8]) -> Result<(), DiagError> {
+    fn send(&mut self, payload: &[u8]) -> Result<(), DiagError> {
+        if self.bus.framing == Framing::Raw {
+            if payload.is_empty() || payload.len() > MAX_MESSAGE_BYTES {
+                return Err(DiagError::InvalidCommand(
+                    "Raw K-Line frame must contain 1..4128 bytes".into(),
+                ));
+            }
+            return self.io.queue(self.channel, self.protocol, payload);
+        }
         Err(DiagError::Unsupported(
             "K-Line supports functional OBD requests; manufacturer addressing is not implemented"
                 .into(),
         ))
     }
-    fn receive(&mut self, _: Duration) -> Result<Option<ResponseFrame>, DiagError> {
+    fn receive(&mut self, timeout: Duration) -> Result<Option<ResponseFrame>, DiagError> {
+        if self.bus.framing == Framing::Raw {
+            let deadline = self.io.now() + timeout;
+            while self.io.now() < deadline {
+                let Some(message) = self.io.read(
+                    self.channel,
+                    deadline.saturating_duration_since(self.io.now()),
+                )?
+                else {
+                    self.io.wait(Duration::from_millis(1));
+                    continue;
+                };
+                if message.rx_status & (RX_BREAK | RX_ERROR | BUFFER_OVERFLOW | TX_FAILED) != 0 {
+                    return Err(DiagError::Adapter(format!(
+                        "K-Line transport error, RX status 0x{:08X}",
+                        message.rx_status
+                    )));
+                }
+                if message.rx_status & (TX_MSG_TYPE | START_OF_MESSAGE | TX_INDICATION_SUCCESS) != 0
+                    || message.data.is_empty()
+                {
+                    continue;
+                }
+                if message.protocol_id != self.protocol {
+                    return Err(DiagError::InvalidResponse(
+                        "Message protocol does not match the K-Line channel".into(),
+                    ));
+                }
+                return Ok(Some(ResponseFrame {
+                    id: 0,
+                    data: message.data,
+                }));
+            }
+            return Ok(None);
+        }
         Err(DiagError::Unsupported(
             "Use a functional OBD exchange on K-Line".into(),
         ))
@@ -427,6 +512,11 @@ impl<I: KLineIo> DiagLink for KLineSession<I> {
         payload: &[u8],
         window: Duration,
     ) -> Result<Vec<ResponseFrame>, DiagError> {
+        if self.bus.framing == Framing::Raw {
+            return Err(DiagError::Unsupported(
+                "Functional OBD requires diagnostic framing".into(),
+            ));
+        }
         let result = self.exchange(payload, window);
         if result.is_err() {
             self.initialized = false;
